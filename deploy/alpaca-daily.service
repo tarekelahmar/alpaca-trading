@@ -1,0 +1,16 @@
+[Unit]
+Description=Alpaca Trading Daily Engine Run
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/alpaca-trading
+EnvironmentFile=/opt/alpaca-trading/.env
+ExecStart=/opt/alpaca-trading/strategy-engine/.venv/bin/python scripts/run_daily.py
+StandardOutput=append:/opt/alpaca-trading/logs/daily.log
+StandardError=append:/opt/alpaca-trading/logs/daily.log
+
+# Allow more memory for FinBERT
+MemoryMax=1800M
+TimeoutStartSec=600

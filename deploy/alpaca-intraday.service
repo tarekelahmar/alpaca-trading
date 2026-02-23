@@ -1,0 +1,15 @@
+[Unit]
+Description=Alpaca Intraday Scanner Run
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/alpaca-trading
+EnvironmentFile=/opt/alpaca-trading/.env
+ExecStart=/opt/alpaca-trading/strategy-engine/.venv/bin/python scripts/intraday_scanner.py
+StandardOutput=append:/opt/alpaca-trading/logs/intraday.log
+StandardError=append:/opt/alpaca-trading/logs/intraday.log
+
+MemoryMax=1800M
+TimeoutStartSec=600

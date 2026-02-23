@@ -1,0 +1,21 @@
+[Unit]
+Description=Alpaca Trading Price Monitor (30s loop)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/alpaca-trading
+EnvironmentFile=/opt/alpaca-trading/.env
+ExecStart=/opt/alpaca-trading/strategy-engine/.venv/bin/python scripts/price_monitor.py --interval 30
+Restart=always
+RestartSec=10
+StandardOutput=append:/opt/alpaca-trading/logs/monitor.log
+StandardError=append:/opt/alpaca-trading/logs/monitor.log
+
+# Resource limits
+MemoryMax=512M
+CPUQuota=25%
+
+[Install]
+WantedBy=multi-user.target

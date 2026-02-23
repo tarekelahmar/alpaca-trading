@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Alpaca Intraday Scanner every 15 min during market hours
+
+[Timer]
+# Every 15 minutes, Mon-Fri
+# The scanner itself checks if market is open and skips if not
+OnCalendar=Mon..Fri *:00/15:00 America/New_York
+Persistent=false
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

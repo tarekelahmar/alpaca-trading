@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Alpaca Daily Engine at 9:35 AM ET (14:35 UTC)
+
+[Timer]
+# 9:35 AM ET = 14:35 UTC (winter) / 13:35 UTC (summer DST)
+# Using America/New_York timezone for automatic DST handling
+OnCalendar=Mon..Fri 09:35:00 America/New_York
+Persistent=true
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target
