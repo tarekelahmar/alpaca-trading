@@ -1,0 +1,10 @@
+[project]
+name = "alpaca-market-data-server"
+version = "1.0.0"
+description = "MCP server for Alpaca market data"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp[cli]>=1.2.0",
+    "alpaca-py>=0.21.0",
+    "pytz",
+]

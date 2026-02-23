@@ -1,0 +1,21 @@
+{
+  "name": "alpaca-broker-server",
+  "version": "1.0.0",
+  "type": "module",
+  "bin": {
+    "alpaca-broker": "./build/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node build/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@alpacahq/alpaca-trade-api": "^3.1.3",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  }
+}
