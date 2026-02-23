@@ -21,3 +21,7 @@ finbert = [
     "transformers>=4.36.0",
     "torch>=2.0.0",
 ]
+
+[tool.setuptools.packages.find]
+# Explicit package list so setuptools doesn't reject the flat layout
+include = ["data", "regime", "signals", "portfolio", "strategies", "backtester"]
