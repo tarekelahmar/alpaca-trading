@@ -38,6 +38,7 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import StopOrderRequest, GetOrdersRequest
 from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 
+from alerting import alert, AlertLevel
 from engine import StrategyEngine
 from portfolio.sizing import PortfolioContext
 from portfolio.universe import UniverseSelector
@@ -191,7 +192,7 @@ def main():
     all_data = fetch_data(data_client, symbols)
 
     if "SPY" not in all_data:
-        print("ERROR: Could not fetch SPY data for regime detection", file=sys.stderr)
+        alert("Daily run ABORTED: could not fetch SPY data", AlertLevel.CRITICAL)
         sys.exit(1)
 
     spy_data = all_data.pop("SPY")
@@ -267,6 +268,8 @@ def main():
     # Execute orders
     print(f"\nExecuting {len(orders)} orders...", file=sys.stderr)
     pending_stops: list[tuple] = []  # (symbol, qty, stop_price) to submit after fills
+    filled = []
+    failed = []
 
     for order in orders:
         try:
@@ -283,20 +286,22 @@ def main():
 
             result = trading_client.submit_order(**order_params)
             print(
-                f"  ✓ {order.side} {order.qty} {order.symbol}: "
+                f"  {order.side} {order.qty} {order.symbol}: "
                 f"order_id={result.id}, status={result.status}",
                 file=sys.stderr,
             )
+            filled.append(f"{order.side} {order.qty} {order.symbol}")
 
             # Queue a stop-loss order for buy orders that have a stop price
             if order.side == "buy" and order.stop_loss and order.stop_loss > 0:
                 pending_stops.append((order.symbol, order.qty, order.stop_loss))
 
         except Exception as e:
-            print(
-                f"  ✗ {order.side} {order.qty} {order.symbol}: {e}",
-                file=sys.stderr,
+            alert(
+                f"Order FAILED: {order.side} {order.qty} {order.symbol}: {e}",
+                AlertLevel.ERROR,
             )
+            failed.append(f"{order.side} {order.qty} {order.symbol}")
 
     # Submit stop-loss orders for new buys
     # Wait briefly for market orders to fill before placing stops
@@ -335,10 +340,19 @@ def main():
                     file=sys.stderr,
                 )
             except Exception as e:
-                print(
-                    f"  ✗ STOP {symbol} @ ${stop_price:.2f}: {e}",
-                    file=sys.stderr,
+                alert(
+                    f"Stop-loss FAILED: {symbol} @ ${stop_price:.2f}: {e}",
+                    AlertLevel.ERROR,
                 )
+
+    # Summary alert
+    summary = (
+        f"Daily run complete: {regime.regime.value} regime | "
+        f"{len(filled)} orders submitted"
+    )
+    if failed:
+        summary += f" | {len(failed)} FAILED: {', '.join(failed)}"
+    alert(summary, AlertLevel.ERROR if failed else AlertLevel.INFO)
 
     print(f"\nDone.", file=sys.stderr)
 

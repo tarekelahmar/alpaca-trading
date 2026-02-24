@@ -28,6 +28,8 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.live import StockDataStream
 from alpaca.trading.client import TradingClient
 
+from alerting import alert, AlertLevel
+
 
 # Stop-loss and take-profit thresholds
 STOP_LOSS_ATR_MULT = 2.0      # exit if price drops 2x ATR below entry
@@ -129,19 +131,18 @@ def check_exits(
         #     exit_reason = f"TAKE PROFIT: {pnl_pct:+.1%} gain"
 
         if exit_reason:
-            print(
-                f"\n[Monitor] EXIT {symbol}: {exit_reason}\n"
-                f"  Entry: ${entry:.2f} → Current: ${current:.2f} "
+            alert(
+                f"EXIT {symbol}: {exit_reason} | "
+                f"Entry: ${entry:.2f} -> Current: ${current:.2f} "
                 f"(P&L: ${pos['unrealized_pl']:+.2f}, {pnl_pct:+.1%})",
-                file=sys.stderr,
+                AlertLevel.WARNING,
             )
             try:
                 trading_client.close_position(symbol)
-                print(f"  ✓ Position closed.", file=sys.stderr)
-                # Remove from high water marks
+                print(f"  Position closed.", file=sys.stderr)
                 high_water_marks.pop(symbol, None)
             except Exception as e:
-                print(f"  ✗ Error closing {symbol}: {e}", file=sys.stderr)
+                alert(f"Failed to close {symbol}: {e}", AlertLevel.ERROR)
 
     return high_water_marks
 
@@ -180,20 +181,20 @@ def check_kill_switch(
     # Daily P&L check
     daily_pnl = equity - starting_equity
     if daily_pnl < -MAX_DAILY_LOSS:
-        print(
-            f"\n[KILL SWITCH] Daily loss ${daily_pnl:+.2f} exceeds "
+        alert(
+            f"KILL SWITCH: Daily loss ${daily_pnl:+.2f} exceeds "
             f"max ${MAX_DAILY_LOSS}. CLOSING ALL POSITIONS.",
-            file=sys.stderr,
+            AlertLevel.CRITICAL,
         )
         return True
 
     # Drawdown from starting equity
     drawdown_pct = (equity - starting_equity) / starting_equity
     if drawdown_pct < -DRAWDOWN_KILL_SWITCH:
-        print(
-            f"\n[KILL SWITCH] Drawdown {drawdown_pct:.1%} exceeds "
+        alert(
+            f"KILL SWITCH: Drawdown {drawdown_pct:.1%} exceeds "
             f"max {DRAWDOWN_KILL_SWITCH:.0%}. CLOSING ALL POSITIONS.",
-            file=sys.stderr,
+            AlertLevel.CRITICAL,
         )
         return True
 
@@ -204,9 +205,9 @@ def close_all_positions(trading_client: TradingClient):
     """Emergency close all positions."""
     try:
         trading_client.close_all_positions(cancel_orders=True)
-        print("[KILL SWITCH] All positions closed, all orders cancelled.", file=sys.stderr)
+        alert("All positions closed, all orders cancelled.", AlertLevel.CRITICAL)
     except Exception as e:
-        print(f"[KILL SWITCH] ERROR closing positions: {e}", file=sys.stderr)
+        alert(f"FAILED to close all positions: {e}", AlertLevel.CRITICAL)
 
 
 def run_loop(trading_client: TradingClient, interval: int, paper: bool):
@@ -260,10 +261,9 @@ def run_loop(trading_client: TradingClient, interval: int, paper: bool):
                     try:
                         account = trading_client.get_account()
                         starting_equity = float(account.equity)
-                        print(
-                            f"[Monitor] Market open! Starting equity: "
-                            f"${starting_equity:,.2f}",
-                            file=sys.stderr,
+                        alert(
+                            f"Market open. Equity: ${starting_equity:,.2f}",
+                            AlertLevel.INFO,
                         )
                     except Exception:
                         pass
@@ -314,9 +314,9 @@ def run_loop(trading_client: TradingClient, interval: int, paper: bool):
                 file=sys.stderr,
             )
             if consecutive_errors > 10:
-                print(
-                    "[Monitor] Too many consecutive errors. Sleeping 5 min...",
-                    file=sys.stderr,
+                alert(
+                    "Monitor: 10+ consecutive errors. Sleeping 5 min.",
+                    AlertLevel.ERROR,
                 )
                 time.sleep(300)
                 consecutive_errors = 0

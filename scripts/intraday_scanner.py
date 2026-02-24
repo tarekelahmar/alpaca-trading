@@ -41,6 +41,8 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest, StopOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 
+from alerting import alert, AlertLevel
+
 # Top 30 most liquid large caps for intraday scanning
 INTRADAY_UNIVERSE = [
     "AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "TSLA", "AMD",
@@ -274,7 +276,7 @@ def close_eod_positions(trading_client: TradingClient, positions: dict, dry_run:
             try:
                 trading_client.close_position(symbol)
             except Exception as e:
-                print(f"  ERROR closing {symbol}: {e}", file=sys.stderr)
+                alert(f"Intraday EOD close FAILED for {symbol}: {e}", AlertLevel.ERROR)
 
 
 def execute_signal(
@@ -337,11 +339,11 @@ def execute_signal(
                 file=sys.stderr,
             )
         except Exception as se:
-            print(f"    WARNING: Stop-loss order failed: {se}", file=sys.stderr)
+            alert(f"Intraday stop-loss FAILED for {signal['symbol']}: {se}", AlertLevel.ERROR)
 
         return True
     except Exception as e:
-        print(f"    ERROR submitting order: {e}", file=sys.stderr)
+        alert(f"Intraday order FAILED: {signal['symbol']}: {e}", AlertLevel.ERROR)
         return False
 
 
