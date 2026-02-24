@@ -38,7 +38,7 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockSnapshotRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest
+from alpaca.trading.requests import MarketOrderRequest, StopOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 
 # Top 30 most liquid large caps for intraday scanning
@@ -295,6 +295,27 @@ def execute_signal(
             f"    Order submitted: id={result.id}, status={result.status}",
             file=sys.stderr,
         )
+
+        # Submit broker-side stop-loss (DAY duration for intraday trades)
+        try:
+            import time
+            time.sleep(2)  # brief wait for fill
+            stop_order = StopOrderRequest(
+                symbol=signal["symbol"],
+                qty=qty,
+                side=OrderSide.SELL,
+                time_in_force=TimeInForce.DAY,
+                stop_price=stop_price,
+            )
+            stop_result = trading_client.submit_order(order_data=stop_order)
+            print(
+                f"    Stop-loss submitted: sell {qty} @ ${stop_price} "
+                f"(id={stop_result.id})",
+                file=sys.stderr,
+            )
+        except Exception as se:
+            print(f"    WARNING: Stop-loss order failed: {se}", file=sys.stderr)
+
         return True
     except Exception as e:
         print(f"    ERROR submitting order: {e}", file=sys.stderr)

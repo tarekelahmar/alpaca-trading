@@ -22,6 +22,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -34,6 +35,8 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import StopOrderRequest, GetOrdersRequest
+from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 
 from engine import StrategyEngine
 from portfolio.sizing import PortfolioContext
@@ -256,6 +259,8 @@ def main():
 
     # Execute orders
     print(f"\nExecuting {len(orders)} orders...", file=sys.stderr)
+    pending_stops: list[tuple] = []  # (symbol, qty, stop_price) to submit after fills
+
     for order in orders:
         try:
             order_params = {
@@ -275,11 +280,58 @@ def main():
                 f"order_id={result.id}, status={result.status}",
                 file=sys.stderr,
             )
+
+            # Queue a stop-loss order for buy orders that have a stop price
+            if order.side == "buy" and order.stop_loss and order.stop_loss > 0:
+                pending_stops.append((order.symbol, order.qty, order.stop_loss))
+
         except Exception as e:
             print(
                 f"  ✗ {order.side} {order.qty} {order.symbol}: {e}",
                 file=sys.stderr,
             )
+
+    # Submit stop-loss orders for new buys
+    # Wait briefly for market orders to fill before placing stops
+    if pending_stops:
+        print(f"\nWaiting 5s for fills before placing {len(pending_stops)} stop-loss orders...", file=sys.stderr)
+        time.sleep(5)
+
+        for symbol, qty, stop_price in pending_stops:
+            try:
+                # Cancel any existing stop orders for this symbol first
+                existing_orders = trading_client.get_orders(
+                    filter=GetOrdersRequest(
+                        status=QueryOrderStatus.OPEN,
+                        symbols=[symbol],
+                    )
+                )
+                for existing in existing_orders:
+                    if existing.type.value == "stop":
+                        trading_client.cancel_order_by_id(existing.id)
+                        print(
+                            f"  Cancelled old stop for {symbol} (id={existing.id})",
+                            file=sys.stderr,
+                        )
+
+                stop_order = StopOrderRequest(
+                    symbol=symbol,
+                    qty=qty,
+                    side=OrderSide.SELL,
+                    time_in_force=TimeInForce.GTC,  # Good-til-cancelled
+                    stop_price=round(stop_price, 2),
+                )
+                result = trading_client.submit_order(order_data=stop_order)
+                print(
+                    f"  ✓ STOP {symbol}: sell {qty} @ ${stop_price:.2f} "
+                    f"(order_id={result.id})",
+                    file=sys.stderr,
+                )
+            except Exception as e:
+                print(
+                    f"  ✗ STOP {symbol} @ ${stop_price:.2f}: {e}",
+                    file=sys.stderr,
+                )
 
     print(f"\nDone.", file=sys.stderr)
 
