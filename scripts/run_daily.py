@@ -35,7 +35,9 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import StopOrderRequest, GetOrdersRequest
+from alpaca.trading.requests import (
+    MarketOrderRequest, LimitOrderRequest, StopOrderRequest, GetOrdersRequest,
+)
 from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 
 from alerting import alert, AlertLevel
@@ -273,18 +275,24 @@ def main():
 
     for order in orders:
         try:
-            order_params = {
-                "symbol": order.symbol,
-                "qty": order.qty,
-                "side": order.side,
-                "type": order.order_type,
-                "time_in_force": "day",
-            }
-            if order.limit_price:
-                order_params["limit_price"] = order.limit_price
-                order_params["type"] = "limit"
+            side = OrderSide.BUY if order.side == "buy" else OrderSide.SELL
+            if order.limit_price and order.order_type == "limit":
+                order_req = LimitOrderRequest(
+                    symbol=order.symbol,
+                    qty=order.qty,
+                    side=side,
+                    time_in_force=TimeInForce.DAY,
+                    limit_price=round(order.limit_price, 2),
+                )
+            else:
+                order_req = MarketOrderRequest(
+                    symbol=order.symbol,
+                    qty=order.qty,
+                    side=side,
+                    time_in_force=TimeInForce.DAY,
+                )
 
-            result = trading_client.submit_order(**order_params)
+            result = trading_client.submit_order(order_data=order_req)
             print(
                 f"  {order.side} {order.qty} {order.symbol}: "
                 f"order_id={result.id}, status={result.status}",
