@@ -49,7 +49,7 @@ DEFAULT_PARAMS = {
     # Volume confirmation
     "require_volume_confirmation": True,   # current vol must beat average
     "volume_surge_threshold": 1.0,         # current vol / avg vol >= this
-    "min_avg_volume": 500_000,
+    "min_avg_volume": 200_000,
     "volume_lookback": 20,
 
     # Time-decay

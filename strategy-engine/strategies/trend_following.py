@@ -30,7 +30,7 @@ DEFAULT_PARAMS = {
     "atr_period": 14,
     "atr_stop_multiplier": 2.0,
     "pullback_atr_distance": 2.0,  # enter when price within 2.0 ATR of fast EMA
-    "min_avg_volume": 500_000,
+    "min_avg_volume": 200_000,
     "volume_lookback": 20,
 }
 

@@ -59,7 +59,7 @@ DEFAULT_PARAMS = {
 
     # Volume confirmation
     "min_volume_surge": 1.5,            # earnings day volume must be 1.5x avg
-    "min_avg_volume": 500_000,
+    "min_avg_volume": 200_000,
     "volume_lookback": 20,
 
     # Risk management

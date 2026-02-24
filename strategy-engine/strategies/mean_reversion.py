@@ -33,7 +33,7 @@ DEFAULT_PARAMS = {
     "adx_max": 35,
     "atr_period": 14,
     "atr_stop_multiplier": 1.5,
-    "min_avg_volume": 500_000,
+    "min_avg_volume": 200_000,
     "volume_lookback": 20,
 }
 

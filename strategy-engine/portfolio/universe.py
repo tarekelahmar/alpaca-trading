@@ -15,8 +15,8 @@ import pandas as pd
 
 @dataclass
 class UniverseFilter:
-    min_price: float = 10.0
-    min_avg_dollar_volume: float = 5_000_000.0
+    min_price: float = 5.0
+    min_avg_dollar_volume: float = 2_000_000.0  # $2M/day — allows liquid small caps
     volume_lookback: int = 20
     exclude_symbols: list[str] | None = None
 
@@ -40,6 +40,34 @@ SP500_CORE = [
     "USB", "V", "VZ", "WBA", "WFC", "WMT", "XOM", "ZTS",
 ]
 
+# Small/mid-cap stocks with good liquidity (avg daily volume > 200K shares).
+# Selected for: analyst coverage gaps, strong earnings reactions, higher
+# volatility (better for trend following and mean reversion), and sector
+# diversity. All trade on NYSE/NASDAQ with $5+ prices.
+SMID_CAP = [
+    # Tech / Software
+    "CRWD", "DDOG", "NET", "ZS", "BILL", "HUBS", "ESTC", "GTLB", "IOT",
+    "CFLT", "DOCN", "BRZE", "APPF", "DT",
+    # Semiconductors
+    "SMCI", "ARM", "ONTO", "RMBS", "CRUS", "LSCC", "ALGM", "ACLS",
+    # Biotech / Pharma
+    "EXAS", "HALO", "PCVX", "INSP", "KRYS", "CORT", "RPRX",
+    "INSM", "ALNY", "SRPT", "RARE",
+    # Healthcare
+    "GMED", "TNDM", "NVCR", "PODD", "IRTC", "NTRA",
+    # Consumer / Retail
+    "SHAK", "CAVA", "WING", "ELF", "ONON", "BIRK", "DUOL",
+    # Industrials / Energy
+    "AXON", "TDG", "TOST", "PAYC", "PCOR", "CSWI", "POWL",
+    # Financials
+    "HOOD", "SOFI", "AFRM", "LPLA", "KNSL", "HLI",
+    # REITs / Infrastructure
+    "GLPI", "IIPR", "REXR",
+]
+
+# Combined default universe
+DEFAULT_UNIVERSE = SP500_CORE + SMID_CAP
+
 
 class UniverseSelector:
 
@@ -48,7 +76,7 @@ class UniverseSelector:
         base_symbols: list[str] | None = None,
         filters: UniverseFilter | None = None,
     ):
-        self.base_symbols = base_symbols or SP500_CORE
+        self.base_symbols = base_symbols or DEFAULT_UNIVERSE
         self.filters = filters or UniverseFilter()
 
     def get_symbols(self) -> list[str]:

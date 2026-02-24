@@ -27,7 +27,7 @@ DEFAULT_PARAMS = {
     "roc_periods": [10, 21, 63, 126],  # 2w, 1m, 3m, 6m
     "roc_weights": [0.15, 0.25, 0.30, 0.30],
     "ema_trend_period": 100,
-    "min_avg_volume": 500_000,
+    "min_avg_volume": 200_000,
     "volume_lookback": 20,
     "min_roc_6m": 0.0,
     "min_roc_2w": -10.0,  # allow deeper recent dips if longer-term momentum is strong
