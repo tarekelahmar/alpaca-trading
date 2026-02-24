@@ -42,6 +42,7 @@ from alpaca.trading.requests import (
 from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 
 from alerting import alert, AlertLevel
+from data.store import DataStore
 from engine import StrategyEngine
 from portfolio.position_metadata import PositionMeta, load_metadata, save_metadata
 from portfolio.profit_targets import get_profit_config, SMID_CAP_TRAIL_MULT
@@ -219,6 +220,29 @@ def main():
         current_positions=current_positions,
     )
 
+    # Initialize trade logger
+    store = DataStore()
+
+    # Log regime and equity snapshot
+    now = datetime.now()
+    try:
+        store.log_regime(
+            timestamp=now,
+            regime_type=regime.regime.value,
+            confidence=regime.confidence,
+            indicators=regime.indicators,
+        )
+        store.log_equity(
+            timestamp=now,
+            equity=portfolio.equity,
+            cash=portfolio.cash,
+            long_market_value=portfolio.equity - portfolio.cash,
+            num_positions=portfolio.num_positions,
+            peak_equity=portfolio.equity,
+        )
+    except Exception as e:
+        print(f"[Engine] Warning: failed to log regime/equity: {e}", file=sys.stderr)
+
     # Print results
     print(f"\n--- RESULTS ---", file=sys.stderr)
     print(f"Regime: {regime.regime.value} (conf: {regime.confidence:.2f})", file=sys.stderr)
@@ -270,13 +294,35 @@ def main():
         print(json.dumps(output, indent=2, default=str))
         return
 
+    # Dedup check: skip symbols we already ordered today (crash-restart protection)
+    already_ordered = set()
+    try:
+        already_ordered = store.get_todays_order_symbols(side="buy")
+        if already_ordered:
+            print(
+                f"[Dedup] Already ordered today: {already_ordered}",
+                file=sys.stderr,
+            )
+    except Exception as e:
+        print(f"[Dedup] Warning: could not check existing orders: {e}", file=sys.stderr)
+
     # Execute orders
     print(f"\nExecuting {len(orders)} orders...", file=sys.stderr)
     pending_stops: list[tuple] = []  # (symbol, qty, stop_price) to submit after fills
     filled = []
     failed = []
+    skipped = []
 
     for order in orders:
+        # Skip if we already submitted a buy for this symbol today
+        if order.side == "buy" and order.symbol in already_ordered:
+            print(
+                f"  SKIP {order.symbol}: already ordered today (dedup)",
+                file=sys.stderr,
+            )
+            skipped.append(order.symbol)
+            continue
+
         try:
             side = OrderSide.BUY if order.side == "buy" else OrderSide.SELL
             if order.limit_price and order.order_type == "limit":
@@ -302,6 +348,46 @@ def main():
                 file=sys.stderr,
             )
             filled.append(f"{order.side} {order.qty} {order.symbol}")
+
+            # Log trade to database
+            try:
+                strategy_id = store.get_or_create_strategy(
+                    name=order.signal.strategy_name,
+                    strategy_type=order.signal.strategy_name,
+                    params={},
+                )
+                tier = order.sizing.details.get("conviction_tier", 4)
+                store.log_trade(
+                    order_id=str(result.id),
+                    symbol=order.symbol,
+                    side=order.side,
+                    qty=order.qty,
+                    price=order.signal.entry_price,
+                    filled_price=None,
+                    order_type=order.order_type,
+                    status=str(result.status),
+                    strategy_id=strategy_id,
+                    signal_id=None,
+                    signal_strength=order.signal.strength,
+                    regime=regime.regime.value,
+                    features={
+                        "conviction_tier": tier,
+                        "confluence_count": order.signal.features.get("confluence_count", 1),
+                        "dollar_value": order.sizing.dollar_value,
+                        "stop_loss": order.stop_loss,
+                        "take_profit": order.take_profit,
+                        **{k: v for k, v in order.signal.features.items()
+                           if isinstance(v, (int, float, str, bool, type(None)))},
+                    },
+                    rationale=order.rationale,
+                    risk_check={
+                        "sizing_method": order.sizing.method,
+                        "portfolio_risk_pct": order.sizing.portfolio_risk_pct,
+                    },
+                    submitted_at=datetime.now(),
+                )
+            except Exception as e:
+                print(f"  Warning: failed to log trade: {e}", file=sys.stderr)
 
             # Queue protective orders for buy orders
             if order.side == "buy" and order.stop_loss and order.stop_loss > 0:
@@ -428,9 +514,13 @@ def main():
         f"Daily run complete: {regime.regime.value} regime | "
         f"{len(filled)} orders submitted"
     )
+    if skipped:
+        summary += f" | {len(skipped)} skipped (dedup): {', '.join(skipped)}"
     if failed:
         summary += f" | {len(failed)} FAILED: {', '.join(failed)}"
     alert(summary, AlertLevel.ERROR if failed else AlertLevel.INFO)
+
+    store.close()
 
     print(f"\nDone.", file=sys.stderr)
 
