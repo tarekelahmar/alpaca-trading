@@ -35,6 +35,10 @@ TAKE_PROFIT_ATR_MULT = 4.0    # exit if price rises 4x ATR above entry
 TRAILING_STOP_PCT = 0.05       # 5% trailing stop from high-water mark
 HARD_STOP_PCT = 0.08           # 8% max loss from entry — absolute floor
 
+# Portfolio-level kill switch
+MAX_DAILY_LOSS = float(os.environ.get("MAX_DAILY_LOSS", "5000"))
+DRAWDOWN_KILL_SWITCH = float(os.environ.get("DRAWDOWN_KILL_SWITCH", "0.10"))
+
 
 def get_clients(paper: bool):
     key = os.environ.get("ALPACA_API_KEY_ID")
@@ -164,16 +168,64 @@ def log_snapshot(positions: list[dict], equity: float):
     )
 
 
+def check_kill_switch(
+    trading_client: TradingClient,
+    equity: float,
+    starting_equity: float,
+) -> bool:
+    """Check portfolio-level circuit breakers. Returns True if trading should halt."""
+    if starting_equity <= 0 or equity <= 0:
+        return False
+
+    # Daily P&L check
+    daily_pnl = equity - starting_equity
+    if daily_pnl < -MAX_DAILY_LOSS:
+        print(
+            f"\n[KILL SWITCH] Daily loss ${daily_pnl:+.2f} exceeds "
+            f"max ${MAX_DAILY_LOSS}. CLOSING ALL POSITIONS.",
+            file=sys.stderr,
+        )
+        return True
+
+    # Drawdown from starting equity
+    drawdown_pct = (equity - starting_equity) / starting_equity
+    if drawdown_pct < -DRAWDOWN_KILL_SWITCH:
+        print(
+            f"\n[KILL SWITCH] Drawdown {drawdown_pct:.1%} exceeds "
+            f"max {DRAWDOWN_KILL_SWITCH:.0%}. CLOSING ALL POSITIONS.",
+            file=sys.stderr,
+        )
+        return True
+
+    return False
+
+
+def close_all_positions(trading_client: TradingClient):
+    """Emergency close all positions."""
+    try:
+        trading_client.close_all_positions(cancel_orders=True)
+        print("[KILL SWITCH] All positions closed, all orders cancelled.", file=sys.stderr)
+    except Exception as e:
+        print(f"[KILL SWITCH] ERROR closing positions: {e}", file=sys.stderr)
+
+
 def run_loop(trading_client: TradingClient, interval: int, paper: bool):
     """Main monitoring loop."""
     high_water_marks: dict[str, float] = {}
     consecutive_errors = 0
     last_market_check = 0
     market_open = False
+    kill_switch_triggered = False
+    starting_equity: float = 0.0  # captured at market open each day
 
     print(
         f"[Monitor] Starting price monitor (interval={interval}s, "
         f"mode={'PAPER' if paper else 'LIVE'})",
+        file=sys.stderr,
+    )
+    print(
+        f"[Monitor] Kill switch: max daily loss=${MAX_DAILY_LOSS:,.0f}, "
+        f"max drawdown={DRAWDOWN_KILL_SWITCH:.0%}",
         file=sys.stderr,
     )
 
@@ -183,11 +235,19 @@ def run_loop(trading_client: TradingClient, interval: int, paper: bool):
 
             # Check market status every 60 seconds (not every tick)
             if now - last_market_check > 60:
+                was_open = market_open
                 market_open = is_market_open(trading_client)
                 last_market_check = now
 
                 if not market_open:
-                    # Sleep longer when market is closed
+                    if was_open:
+                        # Market just closed — reset for tomorrow
+                        print(
+                            f"[Monitor] Market closed. Resetting kill switch.",
+                            file=sys.stderr,
+                        )
+                        kill_switch_triggered = False
+                        starting_equity = 0.0
                     print(
                         f"[Monitor] Market closed. Sleeping 5 min...",
                         file=sys.stderr,
@@ -195,8 +255,26 @@ def run_loop(trading_client: TradingClient, interval: int, paper: bool):
                     time.sleep(300)
                     continue
 
+                # Market just opened — capture starting equity
+                if not was_open and market_open:
+                    try:
+                        account = trading_client.get_account()
+                        starting_equity = float(account.equity)
+                        print(
+                            f"[Monitor] Market open! Starting equity: "
+                            f"${starting_equity:,.2f}",
+                            file=sys.stderr,
+                        )
+                    except Exception:
+                        pass
+
             if not market_open:
                 time.sleep(60)
+                continue
+
+            # If kill switch was triggered, don't trade — just monitor
+            if kill_switch_triggered:
+                time.sleep(interval)
                 continue
 
             # Get positions and account
@@ -206,6 +284,14 @@ def run_loop(trading_client: TradingClient, interval: int, paper: bool):
                 equity = float(account.equity)
             except Exception:
                 equity = 0.0
+
+            # Check portfolio kill switch
+            if starting_equity > 0 and check_kill_switch(
+                trading_client, equity, starting_equity
+            ):
+                close_all_positions(trading_client)
+                kill_switch_triggered = True
+                continue
 
             # Check for exits
             high_water_marks = check_exits(

@@ -169,6 +169,13 @@ def main():
 
     data_client, trading_client = get_clients(paper)
 
+    # Check if market is open (handles holidays, early closes, etc.)
+    clock = trading_client.get_clock()
+    if not clock.is_open:
+        print("Market is closed (holiday or outside hours). Exiting.", file=sys.stderr)
+        print(json.dumps({"status": "market_closed"}))
+        return
+
     # Determine symbols
     if args.symbols:
         symbols = [s.strip().upper() for s in args.symbols.split(",")]

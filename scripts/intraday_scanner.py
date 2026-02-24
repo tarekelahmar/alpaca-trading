@@ -224,11 +224,34 @@ def scan_breakout(symbol: str, df: pd.DataFrame, p: dict) -> dict | None:
 
 
 def get_intraday_positions(trading_client: TradingClient) -> dict[str, dict]:
-    """Get current positions, filtering to intraday universe only."""
+    """Get positions opened TODAY only (not swing positions from daily engine).
+
+    Checks recent filled orders to identify which positions were opened today.
+    This prevents the EOD exit from closing swing positions.
+    """
+    from alpaca.trading.requests import GetOrdersRequest
+    from alpaca.trading.enums import QueryOrderStatus
+
+    # Get today's filled buy orders to know which positions are intraday
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0)
+    today_orders = trading_client.get_orders(filter=GetOrdersRequest(
+        status=QueryOrderStatus.FILLED,
+        after=today_start,
+        limit=100,
+    ))
+    # Symbols bought today by the intraday scanner
+    intraday_buys = set()
+    for order in today_orders:
+        # Only count buys from intraday universe that are DAY orders
+        if (order.side.value == "buy"
+                and order.symbol in INTRADAY_UNIVERSE
+                and order.time_in_force.value == "day"):
+            intraday_buys.add(order.symbol)
+
     positions = trading_client.get_all_positions()
     result = {}
     for pos in positions:
-        if pos.symbol in INTRADAY_UNIVERSE:
+        if pos.symbol in intraday_buys:
             result[pos.symbol] = {
                 "qty": float(pos.qty),
                 "avg_entry_price": float(pos.avg_entry_price),
