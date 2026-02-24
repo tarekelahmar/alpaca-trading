@@ -92,6 +92,7 @@ class MomentumStrategy(Strategy):
                         "momentum_score": score,
                         "rank": rank,
                         "close": float(curr["close"]),
+                        "atr": float(atr),
                     },
                     rationale=(
                         f"Momentum rank #{rank}/{len(scored)}, "

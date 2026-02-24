@@ -19,7 +19,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "strategy-engine"))
@@ -27,8 +27,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "strategy-engine"))
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.live import StockDataStream
 from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import (
+    MarketOrderRequest, TrailingStopOrderRequest, GetOrdersRequest,
+)
+from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 
 from alerting import alert, AlertLevel
+from portfolio.position_metadata import PositionMeta, load_metadata, save_metadata
 
 
 # Stop-loss and take-profit thresholds
@@ -87,64 +92,215 @@ def get_positions(trading_client: TradingClient) -> list[dict]:
         return []
 
 
+def count_trading_days(entry_date_str: str) -> int:
+    """Count weekdays between entry date and today (approximate trading days)."""
+    entry = date.fromisoformat(entry_date_str)
+    today = date.today()
+    count = 0
+    d = entry
+    while d < today:
+        if d.weekday() < 5:  # Mon-Fri
+            count += 1
+        d += timedelta(days=1)
+    return count
+
+
 def check_exits(
     positions: list[dict],
     high_water_marks: dict[str, float],
+    position_meta: dict[str, PositionMeta],
     trading_client: TradingClient,
     paper: bool,
-) -> dict[str, float]:
-    """Check all positions for stop-loss or take-profit triggers.
+) -> tuple[dict[str, float], dict[str, PositionMeta]]:
+    """Check all positions for exit triggers.
 
-    Returns updated high_water_marks dict.
+    Checks in order: hard stop, ATR trailing stop, BB middle target,
+    first profit target (partial scale-out), time-based exit.
+
+    Returns updated (high_water_marks, position_meta).
     """
+    meta_changed = False
+
     for pos in positions:
         symbol = pos["symbol"]
         entry = pos["avg_entry_price"]
         current = pos["current_price"]
         pnl_pct = pos["unrealized_plpc"]
+        qty = pos["qty"]
 
         # Update high-water mark
         prev_high = high_water_marks.get(symbol, entry)
         if current > prev_high:
             high_water_marks[symbol] = current
-
         hwm = high_water_marks.get(symbol, current)
 
-        # Check triggers
+        # Get position metadata (may not exist for legacy positions)
+        meta = position_meta.get(symbol)
+
         exit_reason = None
+        exit_qty = None  # None = full position, int = partial
 
-        # 1. Hard stop: absolute max loss from entry
+        # === 1. Hard stop: absolute max loss from entry (always applies) ===
         if pnl_pct <= -HARD_STOP_PCT:
-            exit_reason = f"HARD STOP: {pnl_pct:+.1%} loss (limit: -{HARD_STOP_PCT:.0%})"
-
-        # 2. Trailing stop: drop from high-water mark
-        elif hwm > entry and current < hwm * (1 - TRAILING_STOP_PCT):
-            drop_from_hwm = (current - hwm) / hwm
             exit_reason = (
-                f"TRAILING STOP: ${current:.2f} is {drop_from_hwm:+.1%} "
-                f"from high of ${hwm:.2f}"
+                f"HARD STOP: {pnl_pct:+.1%} loss "
+                f"(limit: -{HARD_STOP_PCT:.0%})"
             )
 
-        # 3. Take profit (optional — let winners run with trailing stop)
-        # Uncomment if you want hard take-profit:
-        # elif pnl_pct >= 0.15:  # 15% gain
-        #     exit_reason = f"TAKE PROFIT: {pnl_pct:+.1%} gain"
+        # === 2. ATR-based trailing stop (replaces flat 5%) ===
+        elif meta and meta.atr_at_entry > 0 and hwm > entry:
+            trail_distance = meta.trail_stop_atr_mult * meta.atr_at_entry
+            trail_stop_price = hwm - trail_distance
+            if current < trail_stop_price:
+                exit_reason = (
+                    f"ATR TRAILING STOP: ${current:.2f} below "
+                    f"${trail_stop_price:.2f} "
+                    f"(HWM ${hwm:.2f} - {meta.trail_stop_atr_mult:.1f}x "
+                    f"ATR ${meta.atr_at_entry:.2f})"
+                )
 
+        # Fallback flat trailing stop for positions without metadata
+        elif not meta and hwm > entry and current < hwm * (1 - TRAILING_STOP_PCT):
+            drop_from_hwm = (current - hwm) / hwm
+            exit_reason = (
+                f"TRAILING STOP (flat): ${current:.2f} is "
+                f"{drop_from_hwm:+.1%} from high ${hwm:.2f}"
+            )
+
+        # === 3. Mean reversion: exit 100% at BB middle ===
+        if not exit_reason and meta and meta.exit_at_bb_middle:
+            if meta.bb_middle_at_entry and current >= meta.bb_middle_at_entry:
+                exit_reason = (
+                    f"BB MIDDLE TARGET: ${current:.2f} >= "
+                    f"BB middle ${meta.bb_middle_at_entry:.2f}"
+                )
+
+        # === 4. First profit target: partial scale-out ===
+        if (
+            not exit_reason
+            and meta
+            and not meta.first_target_hit
+            and meta.first_target_pct > 0
+            and pnl_pct >= meta.first_target_pct
+        ):
+            sell_qty = int(qty * meta.partial_sell_pct)
+            if sell_qty >= 1:
+                exit_reason = (
+                    f"FIRST TARGET: {pnl_pct:+.1%} >= "
+                    f"{meta.first_target_pct:+.0%} target. "
+                    f"Scaling out {sell_qty}/{int(qty)} shares."
+                )
+                exit_qty = sell_qty  # partial exit
+
+        # === 5. Time-based exit (earnings_momentum PEAD exhaustion) ===
+        if not exit_reason and meta and meta.time_exit_days:
+            days_held = count_trading_days(meta.entry_date)
+            if days_held >= meta.time_exit_days:
+                exit_reason = (
+                    f"TIME EXIT: held {days_held} trading days "
+                    f"(limit: {meta.time_exit_days}d for "
+                    f"{meta.strategy})"
+                )
+
+        # === Execute exit ===
         if exit_reason:
+            is_partial = exit_qty is not None
+            sell_shares = exit_qty if is_partial else int(qty)
+
             alert(
-                f"EXIT {symbol}: {exit_reason} | "
+                f"{'PARTIAL ' if is_partial else ''}EXIT {symbol}: "
+                f"{exit_reason} | "
                 f"Entry: ${entry:.2f} -> Current: ${current:.2f} "
                 f"(P&L: ${pos['unrealized_pl']:+.2f}, {pnl_pct:+.1%})",
                 AlertLevel.WARNING,
             )
             try:
-                trading_client.close_position(symbol)
-                print(f"  Position closed.", file=sys.stderr)
-                high_water_marks.pop(symbol, None)
+                if is_partial:
+                    # Partial sell via market order
+                    order = MarketOrderRequest(
+                        symbol=symbol,
+                        qty=sell_shares,
+                        side=OrderSide.SELL,
+                        time_in_force=TimeInForce.DAY,
+                    )
+                    trading_client.submit_order(order_data=order)
+
+                    # Update metadata
+                    if meta:
+                        meta.first_target_hit = True
+                        meta.remaining_qty = int(qty) - sell_shares
+                        meta_changed = True
+
+                    # Cancel and replace broker-side trailing stop
+                    # with reduced quantity
+                    if meta and meta.broker_trailing_stop_order_id:
+                        try:
+                            trading_client.cancel_order_by_id(
+                                meta.broker_trailing_stop_order_id
+                            )
+                            new_trail_pct = min(
+                                12.0,
+                                max(
+                                    3.0,
+                                    (
+                                        meta.trail_stop_atr_mult
+                                        * meta.atr_at_entry
+                                        / entry
+                                    )
+                                    * 100,
+                                ),
+                            )
+                            new_order = TrailingStopOrderRequest(
+                                symbol=symbol,
+                                qty=meta.remaining_qty,
+                                side=OrderSide.SELL,
+                                time_in_force=TimeInForce.GTC,
+                                trail_percent=round(new_trail_pct, 1),
+                            )
+                            result = trading_client.submit_order(
+                                order_data=new_order
+                            )
+                            meta.broker_trailing_stop_order_id = str(
+                                result.id
+                            )
+                        except Exception as e:
+                            alert(
+                                f"Failed to replace trailing stop for "
+                                f"{symbol}: {e}",
+                                AlertLevel.ERROR,
+                            )
+
+                    print(
+                        f"  Partial close: sold {sell_shares}, "
+                        f"remaining {int(qty) - sell_shares}",
+                        file=sys.stderr,
+                    )
+                else:
+                    # Full close
+                    trading_client.close_position(symbol)
+                    high_water_marks.pop(symbol, None)
+                    if symbol in position_meta:
+                        del position_meta[symbol]
+                        meta_changed = True
+
+                    # Cancel broker-side trailing stop if exists
+                    if meta and meta.broker_trailing_stop_order_id:
+                        try:
+                            trading_client.cancel_order_by_id(
+                                meta.broker_trailing_stop_order_id
+                            )
+                        except Exception:
+                            pass  # may already be filled/cancelled
+
+                    print(f"  Position closed.", file=sys.stderr)
+
             except Exception as e:
                 alert(f"Failed to close {symbol}: {e}", AlertLevel.ERROR)
 
-    return high_water_marks
+    if meta_changed:
+        save_metadata(position_meta)
+
+    return high_water_marks, position_meta
 
 
 def log_snapshot(positions: list[dict], equity: float):
@@ -213,11 +369,25 @@ def close_all_positions(trading_client: TradingClient):
 def run_loop(trading_client: TradingClient, interval: int, paper: bool):
     """Main monitoring loop."""
     high_water_marks: dict[str, float] = {}
+    position_meta: dict[str, PositionMeta] = {}
     consecutive_errors = 0
     last_market_check = 0
     market_open = False
     kill_switch_triggered = False
     starting_equity: float = 0.0  # captured at market open each day
+
+    # Load position metadata from disk
+    try:
+        position_meta = load_metadata()
+        print(
+            f"[Monitor] Loaded metadata for {len(position_meta)} positions",
+            file=sys.stderr,
+        )
+    except Exception as e:
+        print(
+            f"[Monitor] Could not load position metadata: {e}",
+            file=sys.stderr,
+        )
 
     print(
         f"[Monitor] Starting price monitor (interval={interval}s, "
@@ -256,7 +426,8 @@ def run_loop(trading_client: TradingClient, interval: int, paper: bool):
                     time.sleep(300)
                     continue
 
-                # Market just opened — capture starting equity
+                # Market just opened — capture starting equity and
+                # reload metadata (run_daily.py may have written new entries)
                 if not was_open and market_open:
                     try:
                         account = trading_client.get_account()
@@ -265,6 +436,10 @@ def run_loop(trading_client: TradingClient, interval: int, paper: bool):
                             f"Market open. Equity: ${starting_equity:,.2f}",
                             AlertLevel.INFO,
                         )
+                    except Exception:
+                        pass
+                    try:
+                        position_meta = load_metadata()
                     except Exception:
                         pass
 
@@ -293,10 +468,19 @@ def run_loop(trading_client: TradingClient, interval: int, paper: bool):
                 kill_switch_triggered = True
                 continue
 
-            # Check for exits
-            high_water_marks = check_exits(
-                positions, high_water_marks, trading_client, paper
+            # Check for exits (ATR trailing, profit targets, time exits)
+            high_water_marks, position_meta = check_exits(
+                positions, high_water_marks, position_meta,
+                trading_client, paper,
             )
+
+            # Clean up orphaned metadata for positions that no longer exist
+            held_symbols = {p["symbol"] for p in positions}
+            orphans = [s for s in position_meta if s not in held_symbols]
+            if orphans:
+                for s in orphans:
+                    del position_meta[s]
+                save_metadata(position_meta)
 
             # Log snapshot
             log_snapshot(positions, equity)

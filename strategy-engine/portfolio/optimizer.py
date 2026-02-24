@@ -21,6 +21,7 @@ class OrderIntent:
     order_type: str  # "market", "limit"
     limit_price: float | None
     stop_loss: float | None
+    take_profit: float | None
     signal: Signal
     sizing: PositionSizeResult
     rationale: str
@@ -124,6 +125,7 @@ class PortfolioOptimizer:
                     order_type="market",
                     limit_price=None,
                     stop_loss=None,
+                    take_profit=None,
                     signal=sig,
                     sizing=sizing,
                     rationale=sig.rationale,
@@ -180,6 +182,7 @@ class PortfolioOptimizer:
                 order_type="market",
                 limit_price=sig.entry_price,
                 stop_loss=sig.stop_loss,
+                take_profit=sig.take_profit,
                 signal=sig,
                 sizing=sizing,
                 rationale=sig.rationale,

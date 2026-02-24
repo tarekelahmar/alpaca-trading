@@ -36,14 +36,17 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
-    MarketOrderRequest, LimitOrderRequest, StopOrderRequest, GetOrdersRequest,
+    MarketOrderRequest, LimitOrderRequest, StopOrderRequest,
+    TrailingStopOrderRequest, GetOrdersRequest,
 )
 from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 
 from alerting import alert, AlertLevel
 from engine import StrategyEngine
+from portfolio.position_metadata import PositionMeta, load_metadata, save_metadata
+from portfolio.profit_targets import get_profit_config, SMID_CAP_TRAIL_MULT
 from portfolio.sizing import PortfolioContext
-from portfolio.universe import UniverseSelector
+from portfolio.universe import UniverseSelector, SMID_CAP
 
 
 def get_clients(paper: bool) -> tuple[StockHistoricalDataClient, TradingClient]:
@@ -300,9 +303,9 @@ def main():
             )
             filled.append(f"{order.side} {order.qty} {order.symbol}")
 
-            # Queue a stop-loss order for buy orders that have a stop price
+            # Queue protective orders for buy orders
             if order.side == "buy" and order.stop_loss and order.stop_loss > 0:
-                pending_stops.append((order.symbol, order.qty, order.stop_loss))
+                pending_stops.append((order.symbol, order.qty, order.stop_loss, order))
 
         except Exception as e:
             alert(
@@ -311,15 +314,21 @@ def main():
             )
             failed.append(f"{order.side} {order.qty} {order.symbol}")
 
-    # Submit stop-loss orders for new buys
-    # Wait briefly for market orders to fill before placing stops
+    # Place protective orders and write position metadata for new buys
     if pending_stops:
-        print(f"\nWaiting 5s for fills before placing {len(pending_stops)} stop-loss orders...", file=sys.stderr)
+        print(
+            f"\nWaiting 5s for fills before placing "
+            f"{len(pending_stops)} protective orders...",
+            file=sys.stderr,
+        )
         time.sleep(5)
 
-        for symbol, qty, stop_price in pending_stops:
+        smid_set = set(SMID_CAP)
+        metadata = load_metadata()
+
+        for symbol, qty, stop_price, order_obj in pending_stops:
             try:
-                # Cancel any existing stop orders for this symbol first
+                # Cancel any existing stop/trailing_stop orders for this symbol
                 existing_orders = trading_client.get_orders(
                     filter=GetOrdersRequest(
                         status=QueryOrderStatus.OPEN,
@@ -327,31 +336,92 @@ def main():
                     )
                 )
                 for existing in existing_orders:
-                    if existing.type.value == "stop":
+                    if existing.type.value in ("stop", "trailing_stop"):
                         trading_client.cancel_order_by_id(existing.id)
                         print(
-                            f"  Cancelled old stop for {symbol} (id={existing.id})",
+                            f"  Cancelled old {existing.type.value} for "
+                            f"{symbol} (id={existing.id})",
                             file=sys.stderr,
                         )
 
-                stop_order = StopOrderRequest(
+                sig = order_obj.signal
+                sizing = order_obj.sizing
+                strategy_name = sig.strategy_name
+                tier = sizing.details.get("conviction_tier", 4)
+                atr = sig.features.get("atr", 0.0)
+                is_smid = symbol in smid_set
+
+                # Look up profit config for this (strategy, tier)
+                pc = get_profit_config(strategy_name, tier)
+
+                # Get actual entry price from filled position
+                entry_price = sig.entry_price or stop_price / 0.9  # fallback
+                try:
+                    pos_info = trading_client.get_open_position(symbol)
+                    entry_price = float(pos_info.avg_entry_price)
+                except Exception:
+                    pass
+
+                # Compute trailing stop % for broker-side order
+                trail_atr_mult = pc.trail_stop_atr_mult
+                if is_smid:
+                    trail_atr_mult *= SMID_CAP_TRAIL_MULT
+
+                if atr > 0 and entry_price > 0:
+                    trail_pct = min(12.0, max(3.0,
+                        (trail_atr_mult * atr / entry_price) * 100
+                    ))
+                else:
+                    trail_pct = 8.0  # safe default
+
+                # Place broker-side trailing stop (outer safety envelope)
+                trailing_order = TrailingStopOrderRequest(
                     symbol=symbol,
                     qty=qty,
                     side=OrderSide.SELL,
-                    time_in_force=TimeInForce.GTC,  # Good-til-cancelled
-                    stop_price=round(stop_price, 2),
+                    time_in_force=TimeInForce.GTC,
+                    trail_percent=round(trail_pct, 1),
                 )
-                result = trading_client.submit_order(order_data=stop_order)
+                result = trading_client.submit_order(order_data=trailing_order)
+                trailing_order_id = str(result.id)
                 print(
-                    f"  ✓ STOP {symbol}: sell {qty} @ ${stop_price:.2f} "
-                    f"(order_id={result.id})",
+                    f"  TRAILING STOP {symbol}: sell {qty} "
+                    f"trail={trail_pct:.1f}% "
+                    f"({trail_atr_mult:.1f}x ATR, order_id={result.id})",
                     file=sys.stderr,
                 )
+
+                # Build and persist position metadata
+                bb_middle = (
+                    sig.features.get("bb_middle")
+                    if pc.exit_at_bb_middle else None
+                )
+                metadata[symbol] = PositionMeta(
+                    entry_price=entry_price,
+                    entry_date=datetime.now().strftime("%Y-%m-%d"),
+                    strategy=strategy_name,
+                    conviction_tier=tier,
+                    atr_at_entry=atr,
+                    initial_qty=qty,
+                    remaining_qty=qty,
+                    first_target_hit=False,
+                    first_target_pct=pc.first_target_pct,
+                    partial_sell_pct=pc.partial_sell_pct,
+                    trail_stop_atr_mult=trail_atr_mult,
+                    time_exit_days=pc.time_exit_days,
+                    exit_at_bb_middle=pc.exit_at_bb_middle,
+                    bb_middle_at_entry=bb_middle,
+                    is_smid_cap=is_smid,
+                    broker_trailing_stop_order_id=trailing_order_id,
+                )
+
             except Exception as e:
                 alert(
-                    f"Stop-loss FAILED: {symbol} @ ${stop_price:.2f}: {e}",
+                    f"Protective order FAILED for {symbol}: {e}",
                     AlertLevel.ERROR,
                 )
+
+        save_metadata(metadata)
 
     # Summary alert
     summary = (
