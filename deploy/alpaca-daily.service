@@ -13,4 +13,4 @@ StandardError=append:/opt/alpaca-trading/logs/daily.log
 
 # Allow more memory for FinBERT
 MemoryMax=1800M
-TimeoutStartSec=600
+TimeoutStartSec=900
