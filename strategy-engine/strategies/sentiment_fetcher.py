@@ -479,7 +479,7 @@ class SentimentFetcher:
         news_weight: float = 0.4,
         lookback_hours: int = 48,
         decay_half_life_hours: float = 6.0,
-        rate_limit_delay: float = 1.25,
+        rate_limit_delay: float = 0.35,  # Finnhub allows 60 calls/min
     ):
         self.finnhub_client = FinnhubNewsSentimentClient(
             decay_half_life_hours=decay_half_life_hours,
@@ -513,7 +513,7 @@ class SentimentFetcher:
             self._cache[symbol] = data
             results[symbol] = data
 
-            # Rate limit for Finnhub (50 calls/min → 1.25s between calls)
+            # Rate limit for Finnhub (60 calls/min free tier)
             if self.rate_limit_delay > 0 and i < len(to_fetch) - 1:
                 time.sleep(self.rate_limit_delay)
 
