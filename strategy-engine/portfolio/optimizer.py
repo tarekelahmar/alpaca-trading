@@ -1,13 +1,12 @@
 """Portfolio-level Optimization.
 
 Takes a set of sized signals and applies portfolio-level constraints:
-    - Maximum number of open positions
-    - Sector diversification (if sector data available)
-    - Correlation limits between positions
-    - Total exposure cap
+    - Maximum number of open positions (regime-adaptive)
+    - Total exposure cap (regime-adaptive)
+    - Minimum signal strength (regime-adaptive)
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from strategies.base import Signal, SignalDirection
 from portfolio.sizing import PositionSizeResult, PortfolioContext
@@ -25,6 +24,34 @@ class OrderIntent:
     signal: Signal
     sizing: PositionSizeResult
     rationale: str
+
+
+REGIME_OVERRIDES = {
+    "trending_bullish": {
+        "max_open_positions": 15,
+        "max_new_positions_per_day": 5,
+        "max_total_exposure_pct": 0.95,
+        "min_signal_strength": 0.25,
+    },
+    "trending_bearish": {
+        "max_open_positions": 10,
+        "max_new_positions_per_day": 3,
+        "max_total_exposure_pct": 0.60,
+        "min_signal_strength": 0.40,
+    },
+    "ranging": {
+        "max_open_positions": 20,
+        "max_new_positions_per_day": 5,
+        "max_total_exposure_pct": 0.85,
+        "min_signal_strength": 0.20,
+    },
+    "high_volatility": {
+        "max_open_positions": 10,
+        "max_new_positions_per_day": 2,
+        "max_total_exposure_pct": 0.50,
+        "min_signal_strength": 0.50,
+    },
+}
 
 
 @dataclass
@@ -45,6 +72,7 @@ class PortfolioOptimizer:
         signals_with_sizing: list[tuple[Signal, PositionSizeResult]],
         current_positions: dict[str, dict],
         portfolio: PortfolioContext,
+        regime: str | None = None,
     ) -> list[OrderIntent]:
         """Convert sized signals into order intents, respecting portfolio constraints.
 
@@ -53,11 +81,26 @@ class PortfolioOptimizer:
             current_positions: Dict mapping symbol -> position info dict
                                with keys: qty, market_value, side.
             portfolio: Current portfolio context.
+            regime: Optional regime string for adaptive limits.
 
         Returns:
             List of OrderIntent objects, ordered by priority.
         """
         c = self.config
+
+        # Resolve regime-adaptive limits
+        max_open = c.max_open_positions
+        max_new = c.max_new_positions_per_day
+        max_exposure = c.max_total_exposure_pct
+        min_strength = c.min_signal_strength
+
+        if regime and regime in REGIME_OVERRIDES:
+            ov = REGIME_OVERRIDES[regime]
+            max_open = ov.get("max_open_positions", max_open)
+            max_new = ov.get("max_new_positions_per_day", max_new)
+            max_exposure = ov.get("max_total_exposure_pct", max_exposure)
+            min_strength = ov.get("min_signal_strength", min_strength)
+
         orders: list[OrderIntent] = []
 
         # Separate exit signals from entry signals
@@ -97,10 +140,10 @@ class PortfolioOptimizer:
         # Process entries — sort by signal strength descending
         entries.sort(key=lambda x: x[0].strength, reverse=True)
 
-        # Filter weak signals
+        # Filter weak signals (regime-adaptive threshold)
         entries = [
             (s, sz) for s, sz in entries
-            if s.strength >= c.min_signal_strength
+            if s.strength >= min_strength
         ]
 
         # Skip symbols we already hold
@@ -111,12 +154,12 @@ class PortfolioOptimizer:
 
         new_entries = 0
         total_new_value = 0.0
-        max_new_value = portfolio.equity * c.max_total_exposure_pct
+        max_new_value = portfolio.equity * max_exposure
 
         for sig, sizing in entries:
-            if open_count >= c.max_open_positions:
+            if open_count >= max_open:
                 break
-            if new_entries >= c.max_new_positions_per_day:
+            if new_entries >= max_new:
                 break
             if sizing.shares <= 0:
                 continue

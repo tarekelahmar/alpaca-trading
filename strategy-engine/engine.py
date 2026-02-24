@@ -131,7 +131,16 @@ class StrategyEngine:
         raw_signals = self.signal_generator.generate(filtered_data, allocation)
         print(f"[Engine] Raw signals: {len(raw_signals)}", file=sys.stderr)
 
-        # Step 5: Filter and deduplicate
+        # Step 5: Filter and deduplicate (regime-adaptive strength floor)
+        regime_min_strengths = {
+            "trending_bullish": 0.10,
+            "trending_bearish": 0.25,
+            "ranging": 0.10,
+            "high_volatility": 0.30,
+        }
+        self.signal_filter.min_strength = regime_min_strengths.get(
+            regime.regime.value, 0.10
+        )
         filtered_signals = self.signal_filter.filter(raw_signals)
         print(f"[Engine] Filtered signals: {len(filtered_signals)}", file=sys.stderr)
 
@@ -147,8 +156,16 @@ class StrategyEngine:
                 )
                 continue
 
-            strategy_type = sig.strategy_name
-            alloc_pct = getattr(allocation, strategy_type, 0.1)
+            # For confluence signals, sum the allocation weights of all
+            # contributing strategies (capped at 60%) so the merged signal
+            # isn't bottlenecked by a single strategy's allocation.
+            if sig.features.get("confluence") and sig.features.get("confirming_strategies"):
+                alloc_pct = min(0.60, sum(
+                    getattr(allocation, s, 0.0)
+                    for s in sig.features["confirming_strategies"]
+                ))
+            else:
+                alloc_pct = getattr(allocation, sig.strategy_name, 0.1)
 
             ctx = PortfolioContext(
                 equity=portfolio.equity,
@@ -165,19 +182,22 @@ class StrategyEngine:
                 signal_strength=sig.strength,
                 portfolio=ctx,
                 historical_data=hist,
+                features=sig.features,
             )
+            tier = sizing.details.get("conviction_tier", "?")
             print(
                 f"[Engine] Sized {sig.symbol} ({sig.direction.value}): "
                 f"{sizing.shares} shares @ ${sig.entry_price:.2f} "
-                f"(${sizing.dollar_value:.2f}, strength={sig.strength:.2f}, "
-                f"alloc={alloc_pct:.2f})",
+                f"(${sizing.dollar_value:.2f}, T{tier}, "
+                f"strength={sig.strength:.2f}, alloc={alloc_pct:.2f})",
                 file=sys.stderr,
             )
             sized_signals.append((sig, sizing))
 
-        # Step 7: Portfolio optimization
+        # Step 7: Portfolio optimization (regime-adaptive limits)
         orders = self.portfolio_optimizer.optimize(
-            sized_signals, current_positions, portfolio
+            sized_signals, current_positions, portfolio,
+            regime=regime.regime.value,
         )
         print(f"[Engine] Order intents: {len(orders)}", file=sys.stderr)
 
