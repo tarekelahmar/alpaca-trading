@@ -142,9 +142,14 @@ class SignalFilter:
                 # Use the entry price if best doesn't have one
                 if not best.entry_price and sig.entry_price:
                     best.entry_price = sig.entry_price
-                # Use the tightest (highest) stop loss for safety
+                # Use the tightest stop loss for safety
+                # For longs: tightest = highest (closest to entry from below)
+                # For shorts: tightest = lowest (closest to entry from above)
                 if sig.stop_loss and best.stop_loss:
-                    best.stop_loss = max(best.stop_loss, sig.stop_loss)
+                    if best.direction == SignalDirection.SHORT:
+                        best.stop_loss = min(best.stop_loss, sig.stop_loss)
+                    else:
+                        best.stop_loss = max(best.stop_loss, sig.stop_loss)
                 elif sig.stop_loss:
                     best.stop_loss = sig.stop_loss
 

@@ -1,19 +1,22 @@
 """Mean Reversion Strategy: RSI + Bollinger Bands.
 
 Entry conditions (long):
-    - RSI(14) < 35 (oversold)
-    - Price within 0.5% of or below lower Bollinger Band (20, 2.0)
-    - ADX < 30 (no extreme trend — ranging to mild trend)
+    - RSI(14) < 40 (oversold)
+    - Price within 1.5% of or below lower Bollinger Band (20, 2.0)
+    - ADX < 35 (ranging to mild trend)
 
-Exit conditions:
-    - RSI > 50 (mean reverted)
-    - OR price touches upper Bollinger Band
-    - OR trailing stop at 1.5x ATR
+Entry conditions (short):
+    - RSI(14) > 65 (overbought)
+    - Price within 1.5% of or above upper Bollinger Band
+    - ADX < 35 (ranging market)
 
 Exit conditions (close longs):
-    - RSI(14) > 65 (overbought)
-    - Price touches or closes above upper Bollinger Band
-    - ADX < 30
+    - RSI(14) > 65 AND price at upper BB
+    - OR trailing stop at 1.5x ATR
+
+Exit conditions (close shorts):
+    - RSI(14) < 50 AND price at/below BB middle
+    - OR trailing stop at 1.5x ATR
 """
 
 import pandas as pd
@@ -28,9 +31,9 @@ DEFAULT_PARAMS = {
     "rsi_exit": 50,
     "bb_period": 20,
     "bb_std": 2.0,
-    "bb_proximity_pct": 0.015,  # enter within 1.5% of lower BB
+    "bb_proximity_pct": 0.005,  # enter within 0.5% of BB (only at actual extremes)
     "adx_period": 14,
-    "adx_max": 35,
+    "adx_max": 25,
     "atr_period": 14,
     "atr_stop_multiplier": 1.5,
     "min_avg_volume": 200_000,
@@ -61,16 +64,15 @@ class MeanReversionStrategy(Strategy):
             if not self.validate_data(df):
                 continue
 
-            sig = self._analyze_symbol(symbol, df, p)
-            if sig is not None:
-                signals.append(sig)
+            signals.extend(self._analyze_symbol(symbol, df, p))
 
         return signals
 
     def _analyze_symbol(
         self, symbol: str, df: pd.DataFrame, p: dict
-    ) -> Signal | None:
+    ) -> list[Signal]:
         df = df.copy()
+        signals: list[Signal] = []
 
         # Compute indicators
         df["rsi"] = ta.momentum.rsi(df["close"], window=p["rsi_period"])
@@ -89,14 +91,14 @@ class MeanReversionStrategy(Strategy):
         curr = df.iloc[-1]
 
         if pd.isna(curr["rsi"]) or pd.isna(curr["bb_lower"]) or pd.isna(curr["adx"]):
-            return None
+            return signals
 
         if curr["avg_volume"] < p["min_avg_volume"]:
-            return None
+            return signals
 
         # Only in ranging markets
         if curr["adx"] > p["adx_max"]:
-            return None
+            return signals
 
         timestamp = df.index[-1]
         if hasattr(timestamp, "to_pydatetime"):
@@ -104,13 +106,13 @@ class MeanReversionStrategy(Strategy):
 
         atr = float(curr["atr"])
 
-        # Oversold — long entry (price near or below lower BB)
-        bb_threshold = float(curr["bb_lower"]) * (1 + p["bb_proximity_pct"])
-        if curr["rsi"] < p["rsi_oversold"] and curr["close"] <= bb_threshold:
+        # === Oversold — LONG entry (price near or below lower BB) ===
+        bb_lower_threshold = float(curr["bb_lower"]) * (1 + p["bb_proximity_pct"])
+        if curr["rsi"] < p["rsi_oversold"] and curr["close"] <= bb_lower_threshold:
             stop_loss = float(curr["close"]) - p["atr_stop_multiplier"] * atr
             strength = min(1.0, (p["rsi_oversold"] - float(curr["rsi"])) / 25)
 
-            return Signal(
+            signals.append(Signal(
                 timestamp=timestamp,
                 symbol=symbol,
                 direction=SignalDirection.LONG,
@@ -134,11 +136,13 @@ class MeanReversionStrategy(Strategy):
                     f"Ranging market (ADX={curr['adx']:.1f}). "
                     f"Target: BB middle {curr['bb_middle']:.2f}."
                 ),
-            )
+            ))
 
-        # Overbought — close signal (we only do long-side mean reversion for simplicity)
-        if curr["rsi"] > p["rsi_overbought"] and curr["close"] >= curr["bb_upper"]:
-            return Signal(
+        # === Overbought — CLOSE longs AND SHORT entry ===
+        bb_upper_threshold = float(curr["bb_upper"]) * (1 - p["bb_proximity_pct"])
+        if curr["rsi"] > p["rsi_overbought"] and curr["close"] >= bb_upper_threshold:
+            # Close existing long positions
+            signals.append(Signal(
                 timestamp=timestamp,
                 symbol=symbol,
                 direction=SignalDirection.CLOSE,
@@ -148,11 +152,63 @@ class MeanReversionStrategy(Strategy):
                     "rsi": float(curr["rsi"]),
                     "bb_upper": float(curr["bb_upper"]),
                     "close": float(curr["close"]),
+                    "close_side": "long",
                 },
                 rationale=(
                     f"Overbought: RSI={curr['rsi']:.1f} above {p['rsi_overbought']}, "
                     f"price at upper BB {curr['bb_upper']:.2f}. Close long positions."
                 ),
-            )
+            ))
 
-        return None
+            # SHORT entry — overbought mean reversion
+            stop_loss = float(curr["close"]) + p["atr_stop_multiplier"] * atr
+            strength = min(1.0, (float(curr["rsi"]) - p["rsi_overbought"]) / 25)
+
+            signals.append(Signal(
+                timestamp=timestamp,
+                symbol=symbol,
+                direction=SignalDirection.SHORT,
+                strength=strength,
+                strategy_name=self.name,
+                entry_price=float(curr["close"]),
+                stop_loss=stop_loss,
+                take_profit=float(curr["bb_middle"]),
+                features={
+                    "rsi": float(curr["rsi"]),
+                    "bb_lower": float(curr["bb_lower"]),
+                    "bb_middle": float(curr["bb_middle"]),
+                    "bb_upper": float(curr["bb_upper"]),
+                    "adx": float(curr["adx"]),
+                    "atr": atr,
+                    "close": float(curr["close"]),
+                },
+                rationale=(
+                    f"Overbought SHORT: RSI={curr['rsi']:.1f} above {p['rsi_overbought']}, "
+                    f"price {curr['close']:.2f} at/above upper BB {curr['bb_upper']:.2f}. "
+                    f"Ranging market (ADX={curr['adx']:.1f}). "
+                    f"Target: BB middle {curr['bb_middle']:.2f}. "
+                    f"Stop: {stop_loss:.2f}."
+                ),
+            ))
+
+        # === SHORT exit — mean reverted back to middle ===
+        if curr["rsi"] < p["rsi_exit"] and curr["close"] <= curr["bb_middle"]:
+            signals.append(Signal(
+                timestamp=timestamp,
+                symbol=symbol,
+                direction=SignalDirection.CLOSE,
+                strength=0.7,
+                strategy_name=self.name,
+                features={
+                    "rsi": float(curr["rsi"]),
+                    "bb_middle": float(curr["bb_middle"]),
+                    "close": float(curr["close"]),
+                    "close_side": "short",
+                },
+                rationale=(
+                    f"Mean reverted (short): RSI={curr['rsi']:.1f} below {p['rsi_exit']}, "
+                    f"price at BB middle {curr['bb_middle']:.2f}. Close short positions."
+                ),
+            ))
+
+        return signals

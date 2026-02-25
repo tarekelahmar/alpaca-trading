@@ -34,6 +34,7 @@ class PortfolioContext:
     buying_power: float
     num_positions: int
     strategy_allocation_pct: float  # fraction of portfolio allocated to this strategy
+    vix_level: float | None = None  # current VIX (or proxy) for volatility scaling
 
 
 DEFAULT_SIZING_PARAMS = {
@@ -149,6 +150,18 @@ class PositionSizer:
         # Apply conviction-tiered scaling
         final_allocation = capped_allocation * strength_scale
 
+        # VIX-based volatility scaling — reduce size in high-volatility markets
+        vix_scale = 1.0
+        if portfolio.vix_level is not None:
+            if portfolio.vix_level > 35:
+                vix_scale = 0.40   # panic — cut to 40% size
+            elif portfolio.vix_level > 28:
+                vix_scale = 0.60   # elevated fear
+            elif portfolio.vix_level > 22:
+                vix_scale = 0.80   # above average volatility
+            # VIX <= 22: full size (1.0)
+            final_allocation *= vix_scale
+
         # Convert to shares
         shares = max(p["min_shares"], math.floor(final_allocation / entry_price))
 
@@ -179,5 +192,7 @@ class PositionSizer:
                 "final_allocation": final_allocation,
                 "entry_price": entry_price,
                 "stop_loss": stop_loss if stop_loss else entry_price - risk_per_share,
+                "vix_level": portfolio.vix_level,
+                "vix_scale": vix_scale,
             },
         )

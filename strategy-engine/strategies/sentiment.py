@@ -10,9 +10,16 @@ Entry conditions (long):
     - Current volume above 20-day average (institutional agreement)
     - 20-day average volume above minimum threshold
 
+Entry conditions (short):
+    - Composite sentiment score < -0.2 (bearish)
+    - At least 2 news articles in the last 48 hours
+    - Price below 20 EMA (price confirmation)
+    - Current volume above 20-day average (institutional agreement)
+    - If not fully confirmed, generates CLOSE instead of SHORT
+
 Exit conditions:
-    - Composite sentiment score < -0.2 (bearish sentiment shift)
-    - OR trailing stop at 2x ATR below entry
+    - Composite sentiment score < -0.2 (bearish sentiment shift — closes longs)
+    - OR trailing stop at 2x ATR from entry
 
 Signal quality upgrades over basic VADER approach:
     1. FinBERT: Finance-trained BERT model that correctly classifies
@@ -34,10 +41,10 @@ from strategies.sentiment_fetcher import SentimentFetcher, SentimentData
 
 
 DEFAULT_PARAMS = {
-    # Sentiment thresholds (lowered from 0.3 for more signal generation)
-    "sentiment_bull_threshold": 0.2,   # buy when composite > this
-    "sentiment_bear_threshold": -0.2,  # close when composite < this
-    "min_news_count": 2,               # need at least N articles to act
+    # Sentiment thresholds (require stronger conviction for higher quality)
+    "sentiment_bull_threshold": 0.3,   # buy when composite > this
+    "sentiment_bear_threshold": -0.3,  # close/short when composite < this
+    "min_news_count": 3,               # need at least N articles to act
     "sentiment_lookback_hours": 48,    # look at last 48h of news
 
     # Price confirmation
@@ -48,7 +55,7 @@ DEFAULT_PARAMS = {
 
     # Volume confirmation
     "require_volume_confirmation": True,   # current vol must beat average
-    "volume_surge_threshold": 1.0,         # current vol / avg vol >= this
+    "volume_surge_threshold": 1.3,         # current vol / avg vol >= this (above average)
     "min_avg_volume": 200_000,
     "volume_lookback": 20,
 
@@ -158,32 +165,75 @@ class SentimentStrategy(Strategy):
         current_vol = float(curr["volume"])
         volume_ratio = current_vol / avg_vol if avg_vol > 0 else 0.0
 
-        # CLOSE signal: bearish sentiment shift (no volume requirement)
+        # Bearish sentiment: SHORT if fully confirmed, CLOSE if not
         if score < p["sentiment_bear_threshold"]:
-            return Signal(
-                timestamp=timestamp,
-                symbol=symbol,
-                direction=SignalDirection.CLOSE,
-                strength=min(1.0, abs(score - p["sentiment_bear_threshold"]) / 0.5),
-                strategy_name=self.name,
-                features={
-                    "sentiment_score": score,
-                    "finnhub_score": sentiment.finnhub_score,
-                    "news_finbert_score": sentiment.news_finbert_score,
-                    "news_count": sentiment.news_count,
-                    "bullish_mentions": sentiment.bullish_mentions,
-                    "bearish_mentions": sentiment.bearish_mentions,
-                    "volume_ratio": volume_ratio,
-                    "sources": sentiment.sources,
-                    "close": float(curr["close"]),
-                },
-                rationale=(
-                    f"Bearish sentiment: composite={score:.3f} "
-                    f"(threshold={p['sentiment_bear_threshold']}). "
-                    f"News count: {sentiment.news_count}. "
-                    f"Sources: {', '.join(sentiment.sources)}."
-                ),
-            )
+            price_below_ema = curr["close"] < curr["ema_confirm"]
+            volume_confirmed = volume_ratio >= p["volume_surge_threshold"]
+
+            if price_below_ema and volume_confirmed:
+                # SHORT entry — bearish sentiment with price + volume confirmation
+                stop_loss = float(curr["close"]) + p["atr_stop_multiplier"] * atr
+                base_strength = min(1.0, abs(score - p["sentiment_bear_threshold"]) / 0.5)
+                volume_boost = min(0.2, max(0.0, (volume_ratio - 1.0) * 0.1))
+                strength = min(1.0, base_strength + volume_boost)
+
+                return Signal(
+                    timestamp=timestamp,
+                    symbol=symbol,
+                    direction=SignalDirection.SHORT,
+                    strength=strength,
+                    strategy_name=self.name,
+                    entry_price=float(curr["close"]),
+                    stop_loss=stop_loss,
+                    features={
+                        "sentiment_score": score,
+                        "finnhub_score": sentiment.finnhub_score,
+                        "news_finbert_score": sentiment.news_finbert_score,
+                        "news_count": sentiment.news_count,
+                        "bullish_mentions": sentiment.bullish_mentions,
+                        "bearish_mentions": sentiment.bearish_mentions,
+                        "volume_ratio": volume_ratio,
+                        "sources": sentiment.sources,
+                        "ema_confirm": float(curr["ema_confirm"]),
+                        "atr": atr,
+                        "close": float(curr["close"]),
+                    },
+                    rationale=(
+                        f"Bearish sentiment SHORT: composite={score:.3f} "
+                        f"(threshold={p['sentiment_bear_threshold']}). "
+                        f"News: {sentiment.news_count} articles. "
+                        f"Price ${curr['close']:.2f} < EMA{p['confirmation_ema']} "
+                        f"${curr['ema_confirm']:.2f}. "
+                        f"Volume {volume_ratio:.1f}x avg. "
+                        f"Stop: ${stop_loss:.2f}."
+                    ),
+                )
+            else:
+                # CLOSE signal — bearish sentiment but not confirmed for short entry
+                return Signal(
+                    timestamp=timestamp,
+                    symbol=symbol,
+                    direction=SignalDirection.CLOSE,
+                    strength=min(1.0, abs(score - p["sentiment_bear_threshold"]) / 0.5),
+                    strategy_name=self.name,
+                    features={
+                        "sentiment_score": score,
+                        "finnhub_score": sentiment.finnhub_score,
+                        "news_finbert_score": sentiment.news_finbert_score,
+                        "news_count": sentiment.news_count,
+                        "bullish_mentions": sentiment.bullish_mentions,
+                        "bearish_mentions": sentiment.bearish_mentions,
+                        "volume_ratio": volume_ratio,
+                        "sources": sentiment.sources,
+                        "close": float(curr["close"]),
+                    },
+                    rationale=(
+                        f"Bearish sentiment: composite={score:.3f} "
+                        f"(threshold={p['sentiment_bear_threshold']}). "
+                        f"News count: {sentiment.news_count}. "
+                        f"Sources: {', '.join(sentiment.sources)}."
+                    ),
+                )
 
         # LONG signal: bullish sentiment + price + volume confirmation
         if score > p["sentiment_bull_threshold"]:

@@ -24,11 +24,14 @@ from strategies.mean_reversion import MeanReversionStrategy
 from strategies.momentum import MomentumStrategy
 from strategies.sentiment import SentimentStrategy
 from strategies.earnings_momentum import EarningsMomentumStrategy
+from strategies.gap_trading import GapTradingStrategy
+from strategies.sector_rotation import SectorRotationStrategy
 from regime.detector import RegimeDetector, RegimeClassification
 from regime.allocator import RegimeAllocator, AllocationWeights
 from signals.generator import SignalGenerator
 from signals.filter import SignalFilter
 from portfolio.sizing import PositionSizer, PortfolioContext
+from portfolio.drawdown import DrawdownState
 from portfolio.optimizer import PortfolioOptimizer, PortfolioOptimizationConfig, OrderIntent
 from portfolio.universe import UniverseSelector
 
@@ -52,6 +55,8 @@ class StrategyEngine:
             MomentumStrategy(),
             SentimentStrategy(),
             EarningsMomentumStrategy(),
+            GapTradingStrategy(),
+            SectorRotationStrategy(),
         ]
         self.universe = universe or UniverseSelector()
         self.regime_detector = regime_detector or RegimeDetector()
@@ -69,6 +74,7 @@ class StrategyEngine:
         current_positions: dict[str, dict],
         vix_data: pd.DataFrame | None = None,
         breadth_pct: float | None = None,
+        drawdown_state: DrawdownState | None = None,
     ) -> tuple[list[OrderIntent], RegimeClassification, AllocationWeights]:
         """Run the full strategy pipeline.
 
@@ -100,6 +106,8 @@ class StrategyEngine:
             f"MOM: {allocation.momentum:.0%}, "
             f"SENT: {allocation.sentiment:.0%}, "
             f"EARN: {allocation.earnings_momentum:.0%}, "
+            f"GAP: {allocation.gap_trading:.0%}, "
+            f"SEC: {allocation.sector_rotation:.0%}, "
             f"Cash: {allocation.cash:.0%}",
             file=sys.stderr,
         )
@@ -173,6 +181,7 @@ class StrategyEngine:
                 buying_power=portfolio.buying_power,
                 num_positions=portfolio.num_positions,
                 strategy_allocation_pct=alloc_pct,
+                vix_level=portfolio.vix_level,
             )
 
             hist = filtered_data.get(sig.symbol)
@@ -194,10 +203,12 @@ class StrategyEngine:
             )
             sized_signals.append((sig, sizing))
 
-        # Step 7: Portfolio optimization (regime-adaptive limits)
+        # Step 7: Portfolio optimization (regime-adaptive limits + correlation + drawdown)
         orders = self.portfolio_optimizer.optimize(
             sized_signals, current_positions, portfolio,
             regime=regime.regime.value,
+            price_data=filtered_data,
+            drawdown_state=drawdown_state,
         )
         print(f"[Engine] Order intents: {len(orders)}", file=sys.stderr)
 

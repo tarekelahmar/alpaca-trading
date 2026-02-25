@@ -37,13 +37,30 @@ def main():
 
     for pos in positions:
         symbol = pos.symbol
-        qty = float(pos.qty)
+        qty = abs(float(pos.qty))
         entry = float(pos.avg_entry_price)
         current = float(pos.current_price)
-        stop_price = round(entry * (1 - HARD_STOP_PCT), 2)
 
-        print(f"{symbol}: {qty} shares @ ${entry:.2f} (now ${current:.2f})")
-        print(f"  Stop-loss price: ${stop_price:.2f} (-{HARD_STOP_PCT:.0%} from entry)")
+        # Detect position direction
+        pos_side = pos.side
+        if hasattr(pos_side, "value"):
+            pos_side = pos_side.value
+        is_short = str(pos_side) == "short"
+
+        if is_short:
+            # Short: stop is ABOVE entry
+            stop_price = round(entry * (1 + HARD_STOP_PCT), 2)
+            stop_side = OrderSide.BUY
+            side_label = "buy"
+        else:
+            # Long: stop is BELOW entry
+            stop_price = round(entry * (1 - HARD_STOP_PCT), 2)
+            stop_side = OrderSide.SELL
+            side_label = "sell"
+
+        direction = "SHORT" if is_short else "LONG"
+        print(f"{symbol} ({direction}): {qty} shares @ ${entry:.2f} (now ${current:.2f})")
+        print(f"  Stop-loss price: ${stop_price:.2f} ({HARD_STOP_PCT:.0%} from entry)")
 
         # Check for existing stop orders
         existing = tc.get_orders(filter=GetOrdersRequest(
@@ -56,20 +73,20 @@ def main():
             continue
 
         if args.dry_run:
-            print(f"  [DRY RUN] Would place stop sell {int(qty)} @ ${stop_price}")
+            print(f"  [DRY RUN] Would place stop {side_label} {int(qty)} @ ${stop_price}")
         else:
             try:
                 order = StopOrderRequest(
                     symbol=symbol,
                     qty=int(qty),
-                    side=OrderSide.SELL,
+                    side=stop_side,
                     time_in_force=TimeInForce.GTC,
                     stop_price=stop_price,
                 )
                 result = tc.submit_order(order_data=order)
-                print(f"  ✓ Stop placed: sell {int(qty)} @ ${stop_price} (id={result.id})")
+                print(f"  Stop placed: {side_label} {int(qty)} @ ${stop_price} (id={result.id})")
             except Exception as e:
-                print(f"  ✗ Error: {e}")
+                print(f"  Error: {e}")
         print()
 
 

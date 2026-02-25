@@ -44,7 +44,14 @@ from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 from alerting import alert, AlertLevel
 from data.store import DataStore
 from engine import StrategyEngine
+from portfolio.drawdown import (
+    DrawdownCircuitBreaker, DrawdownLevel,
+    get_peak_equity_from_snapshots, get_weakest_positions,
+)
+from portfolio.execution import SmartExecutor, OrderTiming
 from portfolio.position_metadata import PositionMeta, load_metadata, save_metadata
+from portfolio.trade_logger import TradeLogger, TradeEntry
+from strategies.base import SignalDirection
 from portfolio.profit_targets import get_profit_config, SMID_CAP_TRAIL_MULT
 from portfolio.sizing import PortfolioContext
 from portfolio.universe import UniverseSelector, SMID_CAP
@@ -203,13 +210,46 @@ def main():
 
     spy_data = all_data.pop("SPY")
 
+    # Compute VIX proxy: 20-day annualized realized volatility of SPY
+    vix_proxy = None
+    try:
+        spy_returns = spy_data["close"].pct_change().dropna()
+        if len(spy_returns) >= 20:
+            realized_vol = spy_returns.tail(20).std() * (252 ** 0.5) * 100
+            vix_proxy = float(realized_vol)
+    except Exception as e:
+        print(f"[VIX] Could not compute VIX proxy: {e}", file=sys.stderr)
+
     # Get portfolio context
     portfolio = get_portfolio_context(trading_client)
+    portfolio.vix_level = vix_proxy
     current_positions = get_current_positions(trading_client)
 
+    vix_str = f", VIX≈{vix_proxy:.1f}" if vix_proxy else ""
     print(f"\nPortfolio: equity=${portfolio.equity:.2f}, "
           f"cash=${portfolio.cash:.2f}, "
-          f"positions={portfolio.num_positions}", file=sys.stderr)
+          f"positions={portfolio.num_positions}{vix_str}", file=sys.stderr)
+
+    # Initialize loggers
+    store = DataStore()
+    trade_logger = TradeLogger()
+
+    # Check drawdown circuit breaker
+    drawdown_breaker = DrawdownCircuitBreaker()
+    peak_equity = get_peak_equity_from_snapshots(trade_logger)
+    if peak_equity <= 0:
+        peak_equity = portfolio.equity  # first run, no history
+    drawdown_state = drawdown_breaker.check(portfolio.equity, peak_equity)
+    print(
+        f"  Drawdown: {drawdown_state.description}",
+        file=sys.stderr,
+    )
+
+    if drawdown_state.level >= DrawdownLevel.HALT:
+        alert(
+            f"DRAWDOWN CIRCUIT BREAKER: {drawdown_state.description}",
+            AlertLevel.CRITICAL,
+        )
 
     # Run engine
     engine = StrategyEngine()
@@ -218,10 +258,8 @@ def main():
         spy_data=spy_data,
         portfolio=portfolio,
         current_positions=current_positions,
+        drawdown_state=drawdown_state,
     )
-
-    # Initialize trade logger
-    store = DataStore()
 
     # Log regime and equity snapshot
     now = datetime.now()
@@ -251,6 +289,8 @@ def main():
           f"MOM={allocation.momentum:.0%} "
           f"SENT={allocation.sentiment:.0%} "
           f"EARN={allocation.earnings_momentum:.0%} "
+          f"GAP={allocation.gap_trading:.0%} "
+          f"SEC={allocation.sector_rotation:.0%} "
           f"Cash={allocation.cash:.0%}", file=sys.stderr)
     print(f"Orders to execute: {len(orders)}", file=sys.stderr)
 
@@ -295,58 +335,207 @@ def main():
         return
 
     # Dedup check: skip symbols we already ordered today (crash-restart protection)
-    already_ordered = set()
+    # Uses both DataStore (legacy) and TradeLogger (new lifecycle tracking)
+    already_ordered_buy = set()
+    already_ordered_sell = set()
+    already_entered_today = set()
     try:
-        already_ordered = store.get_todays_order_symbols(side="buy")
-        if already_ordered:
+        already_ordered_buy = store.get_todays_order_symbols(side="buy")
+        already_ordered_sell = store.get_todays_order_symbols(side="sell")
+    except Exception as e:
+        print(f"[Dedup] Warning: DataStore dedup check failed: {e}", file=sys.stderr)
+    try:
+        already_entered_today = trade_logger.get_todays_entries()
+    except Exception as e:
+        print(f"[Dedup] Warning: TradeLogger dedup check failed: {e}", file=sys.stderr)
+
+    all_dedup = already_ordered_buy | already_ordered_sell | already_entered_today
+    if all_dedup:
+        print(
+            f"[Dedup] Already ordered today: {all_dedup}",
+            file=sys.stderr,
+        )
+
+    # Conflict handling: if we hold LONG and get SHORT (or vice versa),
+    # exit the existing position but don't enter opposite direction same day.
+    conflict_exits = set()
+    for order in orders:
+        if order.signal.direction in (SignalDirection.LONG, SignalDirection.SHORT):
+            if order.symbol in current_positions:
+                pos = current_positions[order.symbol]
+                pos_side = pos.get("side", "long")
+                if hasattr(pos_side, "value"):
+                    pos_side = pos_side.value
+                pos_side = str(pos_side)
+                is_conflict = (
+                    (order.signal.direction == SignalDirection.SHORT and pos_side == "long")
+                    or (order.signal.direction == SignalDirection.LONG and pos_side == "short")
+                )
+                if is_conflict:
+                    conflict_exits.add(order.symbol)
+
+    if conflict_exits:
+        print(
+            f"\n[Conflict] Exiting positions before direction flip: "
+            f"{conflict_exits}",
+            file=sys.stderr,
+        )
+        for symbol in conflict_exits:
+            try:
+                trading_client.close_position(symbol)
+                print(f"  Closed conflicting position: {symbol}", file=sys.stderr)
+            except Exception as e:
+                print(f"  Error closing {symbol}: {e}", file=sys.stderr)
+        time.sleep(2)  # wait for fills
+
+    # Remove entry orders for conflict symbols (enter on next day)
+    orders = [
+        o for o in orders
+        if o.symbol not in conflict_exits
+        or o.signal.direction == SignalDirection.CLOSE
+    ]
+
+    # Initialize smart executor for limit orders and timing
+    executor = SmartExecutor(trading_client)
+
+    # Group orders by timing window
+    immediate_orders = []
+    delayed_orders = []  # orders that need to wait for strategy timing window
+
+    for order in orders:
+        if order.signal.direction in (SignalDirection.LONG, SignalDirection.SHORT):
+            timing = executor.get_order_timing(order.signal.strategy_name)
+            if timing == OrderTiming.SKIP_TODAY:
+                print(
+                    f"  SKIP {order.symbol}: too late in day for "
+                    f"{order.signal.strategy_name}",
+                    file=sys.stderr,
+                )
+                continue
+            elif timing == OrderTiming.WAIT_FOR_WINDOW:
+                wait_min = executor.minutes_until_window(order.signal.strategy_name)
+                print(
+                    f"  QUEUE {order.symbol}: {order.signal.strategy_name} "
+                    f"window opens in {wait_min:.0f}min",
+                    file=sys.stderr,
+                )
+                delayed_orders.append((order, wait_min))
+            else:
+                immediate_orders.append(order)
+        else:
+            immediate_orders.append(order)  # exit orders are always immediate
+
+    # Process delayed orders: wait for the longest delay then submit all
+    if delayed_orders:
+        max_wait = max(wait for _, wait in delayed_orders)
+        if max_wait > 0 and max_wait <= 45:  # don't wait more than 45 min
             print(
-                f"[Dedup] Already ordered today: {already_ordered}",
+                f"\n  Waiting {max_wait:.0f}min for strategy timing windows...",
                 file=sys.stderr,
             )
-    except Exception as e:
-        print(f"[Dedup] Warning: could not check existing orders: {e}", file=sys.stderr)
+            time.sleep(max_wait * 60)
+        for order, _ in delayed_orders:
+            immediate_orders.append(order)
 
     # Execute orders
-    print(f"\nExecuting {len(orders)} orders...", file=sys.stderr)
-    pending_stops: list[tuple] = []  # (symbol, qty, stop_price) to submit after fills
+    print(f"\nExecuting {len(immediate_orders)} orders...", file=sys.stderr)
+    pending_stops: list[tuple] = []  # (symbol, qty, stop_price, order, position_side)
     filled = []
     failed = []
     skipped = []
 
-    for order in orders:
-        # Skip if we already submitted a buy for this symbol today
-        if order.side == "buy" and order.symbol in already_ordered:
+    for order in immediate_orders:
+        # Skip if we already submitted an order for this symbol/side today
+        if order.symbol in already_entered_today:
             print(
-                f"  SKIP {order.symbol}: already ordered today (dedup)",
+                f"  SKIP {order.symbol}: already entered today (trade_logger dedup)",
                 file=sys.stderr,
             )
             skipped.append(order.symbol)
             continue
+        if order.side == "buy" and order.symbol in already_ordered_buy:
+            print(
+                f"  SKIP {order.symbol}: already bought today (dedup)",
+                file=sys.stderr,
+            )
+            skipped.append(order.symbol)
+            continue
+        if order.side == "sell" and order.signal.direction == SignalDirection.SHORT:
+            if order.symbol in already_ordered_sell:
+                print(
+                    f"  SKIP {order.symbol}: already shorted today (dedup)",
+                    file=sys.stderr,
+                )
+                skipped.append(order.symbol)
+                continue
+
+        # Shortability check for SHORT entries
+        if order.signal.direction == SignalDirection.SHORT:
+            try:
+                asset = trading_client.get_asset(order.symbol)
+                if not (asset.shortable and asset.easy_to_borrow):
+                    print(
+                        f"  SKIP {order.symbol}: not shortable/easy to borrow",
+                        file=sys.stderr,
+                    )
+                    skipped.append(order.symbol)
+                    continue
+            except Exception as e:
+                print(
+                    f"  SKIP {order.symbol}: shortability check failed: {e}",
+                    file=sys.stderr,
+                )
+                skipped.append(order.symbol)
+                continue
 
         try:
-            side = OrderSide.BUY if order.side == "buy" else OrderSide.SELL
-            if order.limit_price and order.order_type == "limit":
-                order_req = LimitOrderRequest(
+            is_entry = order.signal.direction in (
+                SignalDirection.LONG, SignalDirection.SHORT
+            )
+            order_id = None
+            order_type_used = "market"
+            limit_price_used = None
+
+            if is_entry and order.signal.entry_price and order.signal.entry_price > 0:
+                # Use limit order for entries — save on spread
+                order_id, limit_price_used = executor.submit_limit_order(
                     symbol=order.symbol,
                     qty=order.qty,
-                    side=side,
-                    time_in_force=TimeInForce.DAY,
-                    limit_price=round(order.limit_price, 2),
+                    side=order.side,
+                    signal_price=order.signal.entry_price,
+                    strategy_name=order.signal.strategy_name,
                 )
+                if order_id:
+                    order_type_used = "limit"
+                else:
+                    # Limit failed, fall back to market
+                    order_id = executor.submit_market_order(
+                        symbol=order.symbol,
+                        qty=order.qty,
+                        side=order.side,
+                        signal_price=order.signal.entry_price,
+                        strategy_name=order.signal.strategy_name,
+                    )
             else:
+                # Exit orders or no entry price — use market
+                side = OrderSide.BUY if order.side == "buy" else OrderSide.SELL
                 order_req = MarketOrderRequest(
                     symbol=order.symbol,
                     qty=order.qty,
                     side=side,
                     time_in_force=TimeInForce.DAY,
                 )
+                result = trading_client.submit_order(order_data=order_req)
+                order_id = str(result.id)
+                print(
+                    f"  {order.side} {order.qty} {order.symbol}: "
+                    f"order_id={result.id}, status={result.status}",
+                    file=sys.stderr,
+                )
 
-            result = trading_client.submit_order(order_data=order_req)
-            print(
-                f"  {order.side} {order.qty} {order.symbol}: "
-                f"order_id={result.id}, status={result.status}",
-                file=sys.stderr,
-            )
+            if not order_id:
+                raise RuntimeError(f"Order submission returned no order_id")
+
             filled.append(f"{order.side} {order.qty} {order.symbol}")
 
             # Log trade to database
@@ -358,14 +547,14 @@ def main():
                 )
                 tier = order.sizing.details.get("conviction_tier", 4)
                 store.log_trade(
-                    order_id=str(result.id),
+                    order_id=order_id,
                     symbol=order.symbol,
                     side=order.side,
                     qty=order.qty,
                     price=order.signal.entry_price,
                     filled_price=None,
-                    order_type=order.order_type,
-                    status=str(result.status),
+                    order_type=order_type_used,
+                    status="submitted",
                     strategy_id=strategy_id,
                     signal_id=None,
                     signal_strength=order.signal.strength,
@@ -376,6 +565,8 @@ def main():
                         "dollar_value": order.sizing.dollar_value,
                         "stop_loss": order.stop_loss,
                         "take_profit": order.take_profit,
+                        "order_type": order_type_used,
+                        "limit_price": limit_price_used,
                         **{k: v for k, v in order.signal.features.items()
                            if isinstance(v, (int, float, str, bool, type(None)))},
                     },
@@ -389,9 +580,46 @@ def main():
             except Exception as e:
                 print(f"  Warning: failed to log trade: {e}", file=sys.stderr)
 
-            # Queue protective orders for buy orders
-            if order.side == "buy" and order.stop_loss and order.stop_loss > 0:
-                pending_stops.append((order.symbol, order.qty, order.stop_loss, order))
+            # Log entry to TradeLogger for lifecycle tracking
+            if is_entry:
+                try:
+                    direction = "long" if order.signal.direction == SignalDirection.LONG else "short"
+                    tier = order.sizing.details.get("conviction_tier", 4)
+                    trade_logger.log_entry(TradeEntry(
+                        symbol=order.symbol,
+                        direction=direction,
+                        strategy=order.signal.strategy_name,
+                        conviction_tier=tier,
+                        confluence_count=order.signal.features.get("confluence_count", 1),
+                        entry_price=order.signal.entry_price,
+                        entry_qty=order.qty,
+                        entry_order_id=order_id,
+                        entry_regime=regime.regime.value,
+                        entry_vix=vix_proxy,
+                        entry_signal_strength=order.signal.strength,
+                        features={
+                            k: v for k, v in order.signal.features.items()
+                            if isinstance(v, (int, float, str, bool, type(None)))
+                        },
+                        entry_order_type=order_type_used,
+                    ))
+                except Exception as e:
+                    print(f"  Warning: failed to log entry to TradeLogger: {e}", file=sys.stderr)
+
+            # Queue protective orders for new positions (both longs and shorts)
+            is_long_entry = (
+                order.side == "buy"
+                and order.signal.direction == SignalDirection.LONG
+            )
+            is_short_entry = (
+                order.side == "sell"
+                and order.signal.direction == SignalDirection.SHORT
+            )
+            if (is_long_entry or is_short_entry) and order.stop_loss and order.stop_loss > 0:
+                pos_side = "short" if is_short_entry else "long"
+                pending_stops.append(
+                    (order.symbol, order.qty, order.stop_loss, order, pos_side)
+                )
 
         except Exception as e:
             alert(
@@ -400,7 +628,46 @@ def main():
             )
             failed.append(f"{order.side} {order.qty} {order.symbol}")
 
-    # Place protective orders and write position metadata for new buys
+    # Check pending limit orders and convert timed-out ones to market
+    if executor.pending_limits:
+        print(
+            f"\nWaiting for {len(executor.pending_limits)} pending limit orders "
+            f"(timeout: {executor.limit_timeout_minutes}min)...",
+            file=sys.stderr,
+        )
+        # Wait and check periodically
+        check_interval = 60  # check every 60 seconds
+        max_wait_seconds = executor.limit_timeout_minutes * 60
+        waited = 0
+        while executor.pending_limits and waited < max_wait_seconds:
+            time.sleep(min(check_interval, max_wait_seconds - waited))
+            waited += check_interval
+            conversions = executor.check_pending_limits()
+            if conversions:
+                for conv in conversions:
+                    print(
+                        f"  Converted {conv['symbol']}: limit → market",
+                        file=sys.stderr,
+                    )
+        # Final check for any remaining
+        if executor.pending_limits:
+            executor.check_pending_limits()
+
+    # Log slippage summary
+    slippage_summary = executor.get_slippage_summary()
+    if slippage_summary.get("filled", 0) > 0:
+        print(
+            f"\n--- SLIPPAGE SUMMARY ---\n"
+            f"  Orders tracked: {slippage_summary['filled']}\n"
+            f"  Avg slippage: {slippage_summary['avg_slippage_pct']:+.4f}%\n"
+            f"  Limit orders: {slippage_summary['limit_orders']['count']} "
+            f"(avg: {slippage_summary['limit_orders']['avg_slippage_pct']:+.4f}%)\n"
+            f"  Market orders: {slippage_summary['market_orders']['count']} "
+            f"(avg: {slippage_summary['market_orders']['avg_slippage_pct']:+.4f}%)",
+            file=sys.stderr,
+        )
+
+    # Place protective orders and write position metadata for new positions
     if pending_stops:
         print(
             f"\nWaiting 5s for fills before placing "
@@ -412,7 +679,7 @@ def main():
         smid_set = set(SMID_CAP)
         metadata = load_metadata()
 
-        for symbol, qty, stop_price, order_obj in pending_stops:
+        for symbol, qty, stop_price, order_obj, position_side in pending_stops:
             try:
                 # Cancel any existing stop/trailing_stop orders for this symbol
                 existing_orders = trading_client.get_orders(
@@ -460,18 +727,24 @@ def main():
                 else:
                     trail_pct = 8.0  # safe default
 
+                # Trailing stop side: SELL for longs, BUY for shorts
+                trail_side = (
+                    OrderSide.BUY if position_side == "short" else OrderSide.SELL
+                )
+
                 # Place broker-side trailing stop (outer safety envelope)
                 trailing_order = TrailingStopOrderRequest(
                     symbol=symbol,
                     qty=qty,
-                    side=OrderSide.SELL,
+                    side=trail_side,
                     time_in_force=TimeInForce.GTC,
                     trail_percent=round(trail_pct, 1),
                 )
                 result = trading_client.submit_order(order_data=trailing_order)
                 trailing_order_id = str(result.id)
+                side_label = "buy" if position_side == "short" else "sell"
                 print(
-                    f"  TRAILING STOP {symbol}: sell {qty} "
+                    f"  TRAILING STOP {symbol}: {side_label} {qty} "
                     f"trail={trail_pct:.1f}% "
                     f"({trail_atr_mult:.1f}x ATR, order_id={result.id})",
                     file=sys.stderr,
@@ -499,6 +772,10 @@ def main():
                     bb_middle_at_entry=bb_middle,
                     is_smid_cap=is_smid,
                     broker_trailing_stop_order_id=trailing_order_id,
+                    position_side=position_side,
+                    second_target_pct=pc.second_target_pct,
+                    second_sell_pct=pc.second_sell_pct,
+                    second_target_hit=False,
                 )
 
             except Exception as e:
@@ -508,6 +785,31 @@ def main():
                 )
 
         save_metadata(metadata)
+
+    # Log portfolio snapshot
+    try:
+        positions_after = get_current_positions(trading_client)
+        num_long = sum(
+            1 for p in positions_after.values()
+            if str(p.get("side", "long")).replace("PositionSide.", "") == "long"
+        )
+        num_short = sum(
+            1 for p in positions_after.values()
+            if str(p.get("side", "long")).replace("PositionSide.", "") == "short"
+        )
+        total_unrealized = sum(p.get("unrealized_pl", 0) for p in positions_after.values())
+        trade_logger.log_snapshot(
+            equity=portfolio.equity,
+            cash=portfolio.cash,
+            num_positions=len(positions_after),
+            num_long=num_long,
+            num_short=num_short,
+            total_unrealized_pnl=total_unrealized,
+            regime=regime.regime.value,
+            vix_level=vix_proxy,
+        )
+    except Exception as e:
+        print(f"[Snapshot] Warning: failed to log portfolio snapshot: {e}", file=sys.stderr)
 
     # Summary alert
     summary = (
@@ -521,6 +823,7 @@ def main():
     alert(summary, AlertLevel.ERROR if failed else AlertLevel.INFO)
 
     store.close()
+    trade_logger.close()
 
     print(f"\nDone.", file=sys.stderr)
 

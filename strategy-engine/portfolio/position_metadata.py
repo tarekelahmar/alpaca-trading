@@ -36,6 +36,14 @@ class PositionMeta:
     bb_middle_at_entry: float | None
     is_smid_cap: bool
     broker_trailing_stop_order_id: str | None = None
+    position_side: str = "long"  # "long" or "short"
+    # Water marks — persisted so trailing stops survive monitor restarts
+    high_water_mark: float | None = None  # highest price seen (longs)
+    low_water_mark: float | None = None   # lowest price seen (shorts)
+    # Second profit target — 3-stage scale-out
+    second_target_pct: float = 0.0    # 0 = disabled
+    second_sell_pct: float = 0.0      # fraction of remaining to sell
+    second_target_hit: bool = False
 
 
 def load_metadata(path: str = DEFAULT_METADATA_PATH) -> dict[str, PositionMeta]:

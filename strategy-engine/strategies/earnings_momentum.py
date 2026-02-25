@@ -28,10 +28,18 @@ Entry conditions (long):
     - Price above 20 EMA (uptrend context)
     - Volume surge on earnings day (institutional participation)
 
+Entry conditions (short):
+    - Earnings surprise < -5% (missed estimates meaningfully)
+    - Stock gapped down on earnings day (price confirmation)
+    - Reported within last 5 trading days (fresh catalyst)
+    - Price below 20 EMA (downtrend context)
+    - Volume surge on earnings day (institutional participation)
+    - If not fully confirmed, generates CLOSE instead of SHORT
+
 Exit conditions:
-    - Negative earnings surprise (for stocks we hold)
+    - Negative earnings surprise closes longs (or opens shorts if confirmed)
     - OR 30 trading days since entry (drift exhausted)
-    - OR trailing stop at 2.5x ATR below entry
+    - OR trailing stop at 2.5x ATR from entry
 """
 
 import os
@@ -269,28 +277,93 @@ class EarningsMomentumStrategy(Strategy):
         except Exception:
             pass  # can't find earnings day, skip confirmation
 
-        # CLOSE signal: negative earnings surprise
+        # Negative earnings surprise: SHORT if confirmed, CLOSE if not
         if surprise_pct < p["negative_surprise_pct"]:
-            return Signal(
-                timestamp=timestamp,
-                symbol=symbol,
-                direction=SignalDirection.CLOSE,
-                strength=min(1.0, abs(surprise_pct) / 20.0),
-                strategy_name=self.name,
-                features={
-                    "surprise_pct": surprise_pct,
-                    "actual_eps": earnings["actual"],
-                    "estimate_eps": earnings["estimate"],
-                    "report_date": report_date,
-                    "earnings_day_return": earnings_day_return,
-                    "close": float(curr["close"]),
-                },
-                rationale=(
-                    f"Earnings miss: surprise={surprise_pct:+.1f}% "
-                    f"(actual={earnings['actual']:.2f} vs est={earnings['estimate']:.2f}). "
-                    f"Reported {report_date}."
-                ),
+            # Check for short-entry confirmations
+            price_confirmed = (
+                earnings_day_return is not None and earnings_day_return < 0
             )
+            ema_confirmed = curr["close"] < curr["ema_confirm"]
+            volume_ok = (
+                volume_surge is None or volume_surge >= p["min_volume_surge"]
+            )
+
+            if price_confirmed and ema_confirmed and volume_ok:
+                # SHORT entry — negative surprise with full confirmation
+                stop_loss = float(curr["close"]) + p["atr_stop_multiplier"] * atr
+
+                capped_surprise = min(abs(surprise_pct), p["max_surprise_for_scaling"])
+                base_strength = capped_surprise / p["max_surprise_for_scaling"]
+
+                vol_boost = 0.0
+                if volume_surge is not None and volume_surge > 2.0:
+                    vol_boost = min(0.2, (volume_surge - 2.0) * 0.05)
+
+                strength = min(1.0, base_strength + vol_boost)
+
+                # Revenue miss adds extra conviction
+                rev_actual = earnings.get("revenue_actual")
+                rev_estimate = earnings.get("revenue_estimate")
+                revenue_miss = False
+                if rev_actual and rev_estimate and rev_estimate > 0:
+                    rev_surprise = (rev_actual - rev_estimate) / rev_estimate * 100
+                    if rev_surprise < -2.0:  # revenue also missed by 2%+
+                        strength = min(1.0, strength + 0.1)
+                        revenue_miss = True
+
+                return Signal(
+                    timestamp=timestamp,
+                    symbol=symbol,
+                    direction=SignalDirection.SHORT,
+                    strength=strength,
+                    strategy_name=self.name,
+                    entry_price=float(curr["close"]),
+                    stop_loss=stop_loss,
+                    features={
+                        "surprise_pct": surprise_pct,
+                        "actual_eps": earnings["actual"],
+                        "estimate_eps": earnings["estimate"],
+                        "report_date": report_date,
+                        "earnings_day_return": earnings_day_return,
+                        "volume_surge": volume_surge,
+                        "revenue_miss": revenue_miss,
+                        "ema_confirm": float(curr["ema_confirm"]),
+                        "atr": atr,
+                        "close": float(curr["close"]),
+                    },
+                    rationale=(
+                        f"Earnings miss SHORT: surprise={surprise_pct:+.1f}% "
+                        f"(actual={earnings['actual']:.2f} vs est={earnings['estimate']:.2f}). "
+                        f"Reported {report_date}. "
+                        f"Gapped down {earnings_day_return:+.1f}%. "
+                        f"{'Revenue also missed. ' if revenue_miss else ''}"
+                        f"Price ${curr['close']:.2f} < EMA{p['confirmation_ema']} "
+                        f"${curr['ema_confirm']:.2f}. "
+                        f"Stop: ${stop_loss:.2f}."
+                    ),
+                )
+            else:
+                # CLOSE signal — not confirmed for short entry
+                return Signal(
+                    timestamp=timestamp,
+                    symbol=symbol,
+                    direction=SignalDirection.CLOSE,
+                    strength=min(1.0, abs(surprise_pct) / 20.0),
+                    strategy_name=self.name,
+                    features={
+                        "surprise_pct": surprise_pct,
+                        "actual_eps": earnings["actual"],
+                        "estimate_eps": earnings["estimate"],
+                        "report_date": report_date,
+                        "earnings_day_return": earnings_day_return,
+                        "close": float(curr["close"]),
+                    },
+                    rationale=(
+                        f"Earnings miss: surprise={surprise_pct:+.1f}% "
+                        f"(actual={earnings['actual']:.2f} vs est={earnings['estimate']:.2f}). "
+                        f"Reported {report_date}."
+                    ),
+                )
 
         # LONG signal: positive earnings surprise + confirmation
         if surprise_pct > p["surprise_threshold_pct"]:
