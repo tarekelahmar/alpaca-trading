@@ -20,30 +20,27 @@ TIER1_BLUE_CHIP = [
     "ETH/USD",
 ]
 
-# Tier 2: Major Altcoins — good liquidity on Alpaca
+# Tier 2: Major Altcoins — available on Alpaca
+# Note: Alpaca crypto volume is very thin vs Binance/Coinbase
 TIER2_MAJOR_ALT = [
     "SOL/USD",
     "AVAX/USD",
     "LINK/USD",
     "DOT/USD",
-    "MATIC/USD",
     "UNI/USD",
     "AAVE/USD",
     "LTC/USD",
 ]
 
 # Tier 3: Mid-cap Altcoins — tradeable on Alpaca but thinner
+# Removed: MATIC/USD, XLM/USD, ALGO/USD, ATOM/USD, MKR/USD (no Alpaca data)
 TIER3_MID_ALT = [
     "DOGE/USD",
     "SHIB/USD",
     "BCH/USD",
-    "XLM/USD",
-    "ALGO/USD",
-    "ATOM/USD",
     "FIL/USD",
     "GRT/USD",
     "CRV/USD",
-    "MKR/USD",
     "SUSHI/USD",
     "BAT/USD",
     "XTZ/USD",
@@ -58,7 +55,7 @@ class CryptoUniverseFilter:
     """Filters for crypto asset selection."""
 
     min_price: float = 0.0001  # crypto can be very cheap (SHIB)
-    min_avg_dollar_volume: float = 500_000.0  # $500K/day minimum
+    min_avg_dollar_volume: float = 2_000.0  # $2K/day — Alpaca crypto volume is very thin vs CEXs
     volume_lookback: int = 14  # 14-day average (crypto trades 24/7)
     exclude_symbols: list[str] | None = None
     tier_filter: int | None = None  # 1=blue chip only, 2=major+blue, None=all

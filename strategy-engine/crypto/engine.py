@@ -134,9 +134,9 @@ class CryptoStrategyEngine:
         # Step 5: Filter and deduplicate (crypto-adaptive strength floor)
         regime_min_strengths = {
             "trending_bullish": 0.10,
-            "trending_bearish": 0.30,  # higher bar in bear market
-            "ranging": 0.15,
-            "high_volatility": 0.40,  # very high bar in volatile market
+            "trending_bearish": 0.15,  # let short signals through
+            "ranging": 0.12,
+            "high_volatility": 0.25,  # still selective but not paralyzed
         }
         self.signal_filter.min_strength = regime_min_strengths.get(
             regime.regime.value, 0.15

@@ -25,6 +25,7 @@ STRATEGY_TYPE_MAP = {
     "momentum": "momentum",
     "sentiment": "sentiment",
     "earnings_momentum": "earnings_momentum",
+    "btc_dominance": "sector_rotation",  # maps to sector_rotation slot in equity format
 }
 
 

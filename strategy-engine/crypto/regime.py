@@ -229,11 +229,11 @@ CRYPTO_REGIME_ALLOCATIONS: dict[RegimeType, CryptoAllocationWeights] = {
         cash=0.10,
     ),
     RegimeType.TRENDING_BEARISH: CryptoAllocationWeights(
-        trend_following=0.20,  # short-side trend following
+        trend_following=0.30,  # primary edge: short-side trend following
         mean_reversion=0.00,  # DANGEROUS in crypto bear trends
-        momentum=0.10,
-        btc_dominance=0.15,
-        cash=0.55,  # heavy cash in bear market
+        momentum=0.15,        # short weak assets
+        btc_dominance=0.20,   # rotate into relative strength
+        cash=0.35,            # stay active, profit from the move
     ),
     RegimeType.RANGING: CryptoAllocationWeights(
         trend_following=0.10,
@@ -243,11 +243,11 @@ CRYPTO_REGIME_ALLOCATIONS: dict[RegimeType, CryptoAllocationWeights] = {
         cash=0.20,
     ),
     RegimeType.HIGH_VOLATILITY: CryptoAllocationWeights(
-        trend_following=0.10,
-        mean_reversion=0.00,  # absolutely not in high vol
-        momentum=0.05,
-        btc_dominance=0.10,
-        cash=0.75,  # heavy cash — survive first
+        trend_following=0.20,  # vol = big moves = trend opportunity
+        mean_reversion=0.00,   # absolutely not in high vol
+        momentum=0.10,
+        btc_dominance=0.20,    # flight to BTC in chaos
+        cash=0.50,             # cautious but not paralyzed
     ),
 }
 

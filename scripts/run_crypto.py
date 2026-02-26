@@ -147,10 +147,16 @@ def fetch_crypto_data(
     return data
 
 
+def _is_crypto_symbol(symbol: str) -> bool:
+    """Check if a symbol is crypto (contains / or ends with USD without being a stock)."""
+    return "/" in symbol or (symbol.endswith("USD") and len(symbol) <= 10)
+
+
 def get_current_positions(trading_client: TradingClient) -> dict[str, dict]:
     """Get current open crypto positions.
 
-    Filters to only include crypto symbols (contain '/').
+    Filters to only include crypto symbols — equities are excluded
+    so they don't count against crypto position limits.
     """
     positions = trading_client.get_all_positions()
     result = {}
@@ -160,6 +166,10 @@ def get_current_positions(trading_client: TradingClient) -> dict[str, dict]:
         # Normalize to include /
         if "/" not in symbol and "USD" in symbol:
             symbol = symbol.replace("USD", "/USD")
+
+        # Only include crypto positions
+        if not _is_crypto_symbol(symbol):
+            continue
 
         result[symbol] = {
             "qty": float(pos.qty),
@@ -172,14 +182,19 @@ def get_current_positions(trading_client: TradingClient) -> dict[str, dict]:
 
 
 def get_portfolio_context(trading_client: TradingClient) -> PortfolioContext:
-    """Build portfolio context from account info."""
+    """Build portfolio context from account info.
+
+    num_positions counts only crypto positions so equity positions
+    don't consume the crypto position limit.
+    """
     account = trading_client.get_account()
     positions = trading_client.get_all_positions()
+    crypto_count = sum(1 for p in positions if _is_crypto_symbol(p.symbol))
     return PortfolioContext(
         equity=float(account.equity),
         cash=float(account.cash),
         buying_power=float(account.buying_power),
-        num_positions=len(positions),
+        num_positions=crypto_count,
         strategy_allocation_pct=1.0,
     )
 
