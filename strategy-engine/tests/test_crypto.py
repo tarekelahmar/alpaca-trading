@@ -44,7 +44,9 @@ from strategies.base import SignalDirection
 
 # --- Helpers ---
 
-_SHARED_DATES = pd.bdate_range(end="2025-06-01", periods=200)
+# Use hourly dates for crypto (24/7, no business-day restriction)
+# 1200 hourly bars ≈ 50 days — enough for all indicator warmup periods
+_SHARED_DATES = pd.date_range(end="2025-06-01", periods=1200, freq="h")
 
 
 def _make_crypto_df(
@@ -118,15 +120,14 @@ def test_crypto_universe_data_filter():
     """Data-based filtering removes symbols with low volume."""
     selector = CryptoUniverseSelector()
     data = {
-        "BTC/USD": _make_crypto_df(50000, 150, seed=1),
-        "SHIB/USD": _make_crypto_df(0.00001, 150, seed=2),
+        "BTC/USD": _make_crypto_df(50000, 800, seed=1),  # 800 hourly bars (~33 days)
+        "SHIB/USD": _make_crypto_df(0.00001, 800, seed=2),
     }
     # SHIB has very low dollar volume (price * volume)
-    data["SHIB/USD"]["volume"] = 100  # tiny volume
+    data["SHIB/USD"]["volume"] = 0.001  # tiny volume
     filtered = selector.filter_by_data(data)
     assert "BTC/USD" in filtered  # BTC passes
-    # SHIB might be filtered out due to low dollar volume
-    # (depends on price * volume vs $500K threshold)
+    # SHIB filtered out due to low dollar volume
 
 
 def test_crypto_universe_get_tier():
@@ -191,7 +192,7 @@ def test_btc_dominance_no_btc_data():
 
 def test_crypto_regime_bullish():
     """Rising BTC with low vol should detect trending bullish."""
-    btc_df = _make_crypto_df(50000, 150, trend=0.005, volatility=0.015, seed=42)
+    btc_df = _make_crypto_df(50000, 1000, trend=0.001, volatility=0.005, seed=42)
     detector = CryptoRegimeDetector()
     result = detector.classify(btc_df)
     # Should detect some regime (not necessarily bullish due to vol/ADX dynamics)
@@ -203,7 +204,7 @@ def test_crypto_regime_bullish():
 
 def test_crypto_regime_high_vol():
     """Highly volatile BTC data should detect high volatility."""
-    btc_df = _make_crypto_df(50000, 150, trend=0.0, volatility=0.08, seed=42)
+    btc_df = _make_crypto_df(50000, 1000, trend=0.0, volatility=0.03, seed=42)
     detector = CryptoRegimeDetector()
     result = detector.classify(btc_df)
     # High vol should score high_volatility
@@ -212,7 +213,7 @@ def test_crypto_regime_high_vol():
 
 def test_crypto_regime_interface_compatible():
     """Crypto detector returns same RegimeClassification as equity detector."""
-    btc_df = _make_crypto_df(50000, 150, seed=42)
+    btc_df = _make_crypto_df(50000, 1000, seed=42)
     detector = CryptoRegimeDetector()
     result = detector.classify(btc_df, vix_data=None, breadth_pct=None)
     assert isinstance(result.regime, RegimeType)
@@ -271,19 +272,19 @@ def test_crypto_allocation_normalizes():
 # --- Test 5: Strategy Configs ---
 
 def test_crypto_momentum_config():
-    """Crypto momentum should have shorter lookback periods."""
+    """Crypto momentum should have hourly lookback periods."""
     p = CRYPTO_MOMENTUM_CONFIG.params
-    assert p["roc_periods"] == [7, 14, 30, 90]
-    assert p["ema_trend_period"] == 50
+    assert p["roc_periods"] == [24, 72, 168, 720]  # 1d, 3d, 1w, 1m in hours
+    assert p["ema_trend_period"] == 120  # 5-day EMA
     assert p["min_avg_volume"] < 200_000  # lower than equity
 
 
 def test_crypto_trend_config():
-    """Crypto trend following should have wider stops."""
+    """Crypto trend following should have wider stops and hourly EMAs."""
     p = CRYPTO_TREND_CONFIG.params
     assert p["atr_stop_multiplier"] == 3.0  # wider than equity (2.0)
-    assert p["fast_ema"] == 12
-    assert p["slow_ema"] == 26
+    assert p["fast_ema"] == 12   # 12 hours
+    assert p["slow_ema"] == 48   # 2 days
 
 
 def test_crypto_mean_reversion_config():

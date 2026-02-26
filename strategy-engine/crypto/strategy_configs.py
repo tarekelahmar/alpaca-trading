@@ -1,82 +1,79 @@
-"""Crypto-Adapted Strategy Configurations.
+"""Crypto-Adapted Strategy Configurations (Hourly Bars).
 
-These configs parameterize the EXISTING equity strategies for crypto markets.
-Rather than rewriting strategies from scratch, we use StrategyConfig with
-crypto-tuned parameters. Key adaptations:
+These configs parameterize the EXISTING equity strategies for crypto markets
+using HOURLY bars instead of daily. Key conversions:
+    1 day   = 24 hours
+    1 week  = 168 hours
+    1 month = 720 hours
 
 Momentum:
-    - Shorter lookback periods (crypto moves faster)
-    - Wider RSI bands (40/80 instead of equity defaults)
-    - Lower volume thresholds (crypto volume is different)
-    - Fewer top_n (smaller universe)
+    - ROC periods in hours: 24h, 72h (3d), 168h (1w), 720h (1m)
+    - Fast EMA for trend filter (120h ≈ 5 days)
 
 Trend Following:
-    - Faster EMA pair (12/26 instead of 20/50, 100 instead of 200)
-    - Wider ATR stops (3x instead of 2x — crypto is more volatile)
-    - Lower ADX threshold (20 vs 25 — crypto trends start faster)
+    - Fast EMA: 12h, Slow EMA: 48h, Trend EMA: 168h (1 week)
+    - ADX/ATR on 24-bar (1 day) window
+    - Wider ATR stops (3x — crypto whips intraday)
 
 Mean Reversion:
-    - Only safe in ranging/bull regimes (controlled by allocator)
-    - RSI bands 25/75 (more extreme — crypto means harder)
-    - Wider BB proximity (1.0% vs 0.5%)
-    - Tighter time exits (crypto can gap through stops on trend resumption)
+    - RSI/BB on 24-bar (1 day) window
+    - Only safe in ranging regimes (controlled by allocator)
 """
 
 from strategies.base import StrategyConfig
 
 
-# --- Crypto Momentum Config ---
+# --- Crypto Momentum Config (Hourly) ---
 CRYPTO_MOMENTUM_CONFIG = StrategyConfig(
     name="momentum",
     params={
-        "top_n": 5,  # smaller universe → fewer picks
+        "top_n": 5,
         "exit_rank_threshold_multiplier": 1.5,
-        "roc_periods": [7, 14, 30, 90],  # 1w, 2w, 1m, 3m (faster than equity)
-        "roc_weights": [0.20, 0.25, 0.30, 0.25],  # more weight on short-term
-        "ema_trend_period": 50,  # 50 instead of 100 (crypto cycles are shorter)
-        "min_avg_volume": 10_000,  # lower bar (crypto volume denominated differently)
-        "volume_lookback": 14,  # 2 weeks
-        "min_roc_6m": 5.0,  # lower threshold (3m is our longest, not 6m)
-        "min_roc_2w": -15.0,  # allow deeper dips (crypto is more volatile)
+        "roc_periods": [24, 72, 168, 720],  # 1d, 3d, 1w, 1m in hours
+        "roc_weights": [0.25, 0.30, 0.25, 0.20],  # more weight on short-term
+        "ema_trend_period": 120,  # 5-day EMA for trend filter
+        "min_avg_volume": 10_000,
+        "volume_lookback": 168,  # 1 week of hourly bars
+        "min_roc_6m": 5.0,
+        "min_roc_2w": -15.0,
     },
 )
 
-# --- Crypto Trend Following Config ---
+# --- Crypto Trend Following Config (Hourly) ---
 CRYPTO_TREND_CONFIG = StrategyConfig(
     name="trend_following",
     params={
-        "fast_ema": 12,  # 12 instead of 20 (faster entry)
-        "slow_ema": 26,  # 26 instead of 50 (MACD standard)
-        "trend_ema": 100,  # 100 instead of 200 (crypto cycles shorter)
-        "adx_period": 14,
-        "adx_threshold": 20,  # lower than equity (crypto trends with less ADX)
-        "atr_period": 14,
-        "atr_stop_multiplier": 3.0,  # wider stops — crypto whips more
-        "pullback_atr_distance": 2.5,  # wider pullback zone
+        "fast_ema": 12,      # 12 hours
+        "slow_ema": 48,      # 2 days
+        "trend_ema": 168,    # 1 week
+        "adx_period": 24,    # 1-day ADX
+        "adx_threshold": 20,
+        "atr_period": 24,    # 1-day ATR
+        "atr_stop_multiplier": 3.0,
+        "pullback_atr_distance": 2.5,
         "min_avg_volume": 10_000,
-        "volume_lookback": 14,
+        "volume_lookback": 168,  # 1 week
     },
 )
 
-# --- Crypto Mean Reversion Config ---
+# --- Crypto Mean Reversion Config (Hourly) ---
 # WARNING: Mean reversion in crypto is DANGEROUS in trending markets.
-# The allocator gives this 0% in trending_bullish and trending_bearish regimes.
 CRYPTO_MEAN_REVERSION_CONFIG = StrategyConfig(
     name="mean_reversion",
     params={
-        "rsi_period": 14,
-        "rsi_oversold": 25,  # more extreme than equity (crypto oversold is deeper)
-        "rsi_overbought": 75,  # more extreme
+        "rsi_period": 24,       # 1-day RSI
+        "rsi_oversold": 25,
+        "rsi_overbought": 75,
         "rsi_exit": 50,
-        "bb_period": 20,
-        "bb_std": 2.5,  # wider bands for crypto volatility
-        "bb_proximity_pct": 0.01,  # 1% proximity (wider than equity 0.5%)
-        "adx_period": 14,
-        "adx_max": 30,  # allow slightly trendier markets (crypto is always a bit trendy)
-        "atr_period": 14,
-        "atr_stop_multiplier": 2.0,  # wider than equity MR (1.5)
+        "bb_period": 48,        # 2-day Bollinger Bands
+        "bb_std": 2.5,
+        "bb_proximity_pct": 0.01,
+        "adx_period": 24,       # 1-day ADX
+        "adx_max": 30,
+        "atr_period": 24,       # 1-day ATR
+        "atr_stop_multiplier": 2.0,
         "min_avg_volume": 10_000,
-        "volume_lookback": 14,
+        "volume_lookback": 168,  # 1 week
     },
 )
 

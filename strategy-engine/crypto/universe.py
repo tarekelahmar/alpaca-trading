@@ -55,8 +55,8 @@ class CryptoUniverseFilter:
     """Filters for crypto asset selection."""
 
     min_price: float = 0.0001  # crypto can be very cheap (SHIB)
-    min_avg_dollar_volume: float = 2_000.0  # $2K/day — Alpaca crypto volume is very thin vs CEXs
-    volume_lookback: int = 14  # 14-day average (crypto trades 24/7)
+    min_avg_dollar_volume: float = 100.0  # $100/hour — Alpaca crypto volume is very thin vs CEXs
+    volume_lookback: int = 336  # 14 days of hourly bars (24*14)
     exclude_symbols: list[str] | None = None
     tier_filter: int | None = None  # 1=blue chip only, 2=major+blue, None=all
 

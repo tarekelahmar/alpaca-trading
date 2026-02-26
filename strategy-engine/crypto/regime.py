@@ -26,13 +26,20 @@ from regime.detector import RegimeType, RegimeClassification
 
 # Crypto-specific volatility thresholds (annualized realized vol)
 # Crypto normal ≈ 40-60%, equities normal ≈ 12-18%
+# All period params are in HOURLY bars (24 bars = 1 day)
 CRYPTO_THRESHOLDS = {
     "vol_low": 40,       # annualized vol below 40% → calm (rare in crypto)
     "vol_high": 80,      # above 80% → elevated
     "vol_extreme": 120,  # above 120% → panic
     "adx_trending": 20,  # lower bar for crypto (trends emerge faster)
-    "ema_fast": 50,
-    "ema_slow": 100,
+    "ema_fast": 120,     # 5-day EMA (120 hours)
+    "ema_slow": 336,     # 14-day EMA (336 hours)
+    "vol_window": 480,   # 20 days of hourly bars for realized vol
+    "annualize_factor": 8760,  # sqrt(8760 hours/year) for annualization
+    "adx_period": 24,    # 1-day ADX
+    "ema50_period": 120, # 5-day (~hourly equivalent of daily 50)
+    "ema100_period": 336, # 14-day (~hourly equivalent of daily 100)
+    "drawdown_lookback": 720,  # 30 days in hourly bars
 }
 
 
@@ -69,9 +76,16 @@ class CryptoRegimeDetector:
         indicators: dict = {}
         scores: dict[RegimeType, float] = {r: 0.0 for r in RegimeType}
 
-        # 1. BTC realized volatility (annualized 20-day)
+        vol_window = t.get("vol_window", 480)  # 20 days of hourly bars
+        annualize = t.get("annualize_factor", 8760)  # hours per year
+        adx_period = t.get("adx_period", 24)  # 1-day ADX on hourly bars
+        ema50_period = t.get("ema50_period", 120)  # 5-day EMA
+        ema100_period = t.get("ema100_period", 336)  # 14-day EMA
+        dd_lookback = t.get("drawdown_lookback", 720)  # 30 days in hourly bars
+
+        # 1. BTC realized volatility (annualized from hourly returns)
         returns = btc_data["close"].pct_change()
-        realized_vol = float(returns.rolling(20).std().iloc[-1] * (365 ** 0.5) * 100)
+        realized_vol = float(returns.rolling(vol_window).std().iloc[-1] * (annualize ** 0.5) * 100)
         indicators["realized_vol"] = realized_vol
 
         if realized_vol >= t["vol_extreme"]:
@@ -83,11 +97,11 @@ class CryptoRegimeDetector:
             scores[RegimeType.TRENDING_BULLISH] += 1.0
             scores[RegimeType.RANGING] += 0.5
 
-        # 2. BTC trend via ADX
-        if len(btc_data) > 20:
+        # 2. BTC trend via ADX (on hourly bars)
+        if len(btc_data) > adx_period * 2:
             adx = ta.trend.adx(
                 btc_data["high"], btc_data["low"], btc_data["close"],
-                window=14,
+                window=adx_period,
             )
             adx_current = float(adx.iloc[-1]) if not pd.isna(adx.iloc[-1]) else 0.0
         else:
@@ -113,10 +127,10 @@ class CryptoRegimeDetector:
         else:
             scores[RegimeType.RANGING] += 2.0
 
-        # 3. Price vs EMAs
+        # 3. Price vs EMAs (hourly equivalents)
         current_price = float(btc_data.iloc[-1]["close"])
-        ema50 = ta.trend.ema_indicator(btc_data["close"], window=50)
-        ema100 = ta.trend.ema_indicator(btc_data["close"], window=100)
+        ema50 = ta.trend.ema_indicator(btc_data["close"], window=ema50_period)
+        ema100 = ta.trend.ema_indicator(btc_data["close"], window=ema100_period)
 
         ema50_val = float(ema50.iloc[-1]) if not pd.isna(ema50.iloc[-1]) else current_price
         ema100_val = float(ema100.iloc[-1]) if not pd.isna(ema100.iloc[-1]) else current_price
@@ -129,8 +143,8 @@ class CryptoRegimeDetector:
         elif current_price < ema50_val < ema100_val:
             scores[RegimeType.TRENDING_BEARISH] += 1.5
 
-        # 4. Recent drawdown check (30-day high vs current)
-        high_30d = float(btc_data["high"].tail(30).max())
+        # 4. Recent drawdown check (30 days of hourly bars)
+        high_30d = float(btc_data["high"].tail(dd_lookback).max())
         drawdown_30d = (high_30d - current_price) / high_30d if high_30d > 0 else 0.0
         indicators["drawdown_30d"] = drawdown_30d
 

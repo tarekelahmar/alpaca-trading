@@ -77,21 +77,22 @@ def get_clients(paper: bool) -> tuple[CryptoHistoricalDataClient, TradingClient]
 def fetch_crypto_data(
     data_client: CryptoHistoricalDataClient,
     symbols: list[str],
-    days: int = 200,
+    days: int = 45,
 ) -> dict[str, pd.DataFrame]:
-    """Fetch historical daily bars for crypto symbols.
+    """Fetch historical hourly bars for crypto symbols.
 
-    Uses CryptoBarsRequest (different from StockBarsRequest).
-    Crypto data is available 24/7 with no feed restrictions.
+    Uses CryptoBarsRequest with TimeFrame.Hour for intraday signals.
+    45 days of hourly data = ~1080 bars per symbol — enough for
+    the longest indicator (720-bar momentum lookback) plus warmup.
     """
-    print(f"Fetching crypto data for {len(symbols)} symbols...", file=sys.stderr)
+    print(f"Fetching hourly crypto data for {len(symbols)} symbols ({days}d)...", file=sys.stderr)
     start = datetime.now() - timedelta(days=days)
 
     data: dict[str, pd.DataFrame] = {}
     try:
         params = CryptoBarsRequest(
             symbol_or_symbols=symbols,
-            timeframe=TimeFrame.Day,
+            timeframe=TimeFrame.Hour,
             start=start,
         )
         bars = data_client.get_crypto_bars(params)
@@ -120,7 +121,7 @@ def fetch_crypto_data(
             try:
                 params = CryptoBarsRequest(
                     symbol_or_symbols=symbol,
-                    timeframe=TimeFrame.Day,
+                    timeframe=TimeFrame.Hour,
                     start=start,
                 )
                 bars = data_client.get_crypto_bars(params)
@@ -143,7 +144,7 @@ def fetch_crypto_data(
             except Exception as e2:
                 print(f"Error fetching {symbol}: {e2}", file=sys.stderr)
 
-    print(f"Got crypto data for {len(data)} symbols", file=sys.stderr)
+    print(f"Got hourly crypto data for {len(data)} symbols", file=sys.stderr)
     return data
 
 
@@ -265,12 +266,13 @@ def main():
     btc_data = all_data["BTC/USD"]
     # Don't pop BTC — strategies need it too
 
-    # Compute crypto volatility proxy (annualized BTC realized vol)
+    # Compute crypto volatility proxy (annualized BTC realized vol from hourly returns)
+    # 24*365 = 8760 trading hours per year for crypto
     vol_proxy = None
     try:
         btc_returns = btc_data["close"].pct_change().dropna()
-        if len(btc_returns) >= 20:
-            realized_vol = btc_returns.tail(20).std() * (365 ** 0.5) * 100
+        if len(btc_returns) >= 480:  # ~20 days of hourly bars
+            realized_vol = btc_returns.tail(480).std() * (8760 ** 0.5) * 100
             vol_proxy = float(realized_vol)
     except Exception as e:
         print(f"[Vol] Could not compute crypto volatility proxy: {e}", file=sys.stderr)

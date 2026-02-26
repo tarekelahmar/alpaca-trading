@@ -27,12 +27,12 @@ import ta
 from strategies.base import Signal, SignalDirection, Strategy, StrategyConfig
 
 DEFAULT_PARAMS = {
-    "dominance_lookback": 14,      # days to compute relative performance
-    "trend_lookback": 30,          # days for trend confirmation
+    "dominance_lookback": 336,     # 14 days in hourly bars (24*14)
+    "trend_lookback": 720,         # 30 days in hourly bars (24*30)
     "dominance_threshold": 0.02,   # 2% relative outperformance to trigger rotation
     "top_alts": 3,                 # number of top alts to go long
-    "min_history_days": 60,        # minimum data needed
-    "atr_period": 14,
+    "min_history_days": 720,       # minimum hourly bars needed (~30 days)
+    "atr_period": 24,              # 1-day ATR on hourly bars
     "atr_stop_multiplier": 3.0,    # wide stops for crypto
     "btc_symbol": "BTC/USD",
     "eth_symbol": "ETH/USD",
