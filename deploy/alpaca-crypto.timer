@@ -1,10 +1,10 @@
 [Unit]
-Description=Run Alpaca Crypto Strategy Engine every 4 hours
+Description=Run Alpaca Crypto Strategy Engine every 2 hours
 
 [Timer]
-# Crypto runs 24/7, every day, every 4 hours
+# Crypto runs 24/7, every day, every 2 hours
 # Unlike equities, no weekday restriction — crypto never sleeps
-OnCalendar=*-*-* 00/4:00:00
+OnCalendar=*-*-* 00/2:00:00
 Persistent=true
 AccuracySec=30s
 
