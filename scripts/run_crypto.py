@@ -539,25 +539,16 @@ def main():
                 else:
                     trail_pct = 12.0  # crypto default (wider than equity 8%)
 
-                trail_side = (
-                    OrderSide.BUY if position_side == "short" else OrderSide.SELL
-                )
-
-                trailing_order = TrailingStopOrderRequest(
-                    symbol=symbol,
-                    qty=qty,
-                    side=trail_side,
-                    time_in_force=TimeInForce.GTC,
-                    trail_percent=round(trail_pct, 1),
-                )
-                result = trading_client.submit_order(order_data=trailing_order)
-                trailing_order_id = str(result.id)
+                # Alpaca crypto does NOT support trailing stop orders.
+                # We save the trail params in metadata and the crypto_monitor
+                # enforces the trailing stop in software every 60s.
+                trailing_order_id = None
 
                 side_label = "buy" if position_side == "short" else "sell"
                 print(
-                    f"  TRAILING STOP {symbol}: {side_label} {qty} "
+                    f"  TRAILING STOP {symbol} (software): {side_label} {qty} "
                     f"trail={trail_pct:.1f}% "
-                    f"({trail_atr_mult:.1f}x ATR, order_id={result.id})",
+                    f"({trail_atr_mult:.1f}x ATR, managed by crypto_monitor)",
                     file=sys.stderr,
                 )
 
