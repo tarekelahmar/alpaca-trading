@@ -1,0 +1,16 @@
+[Unit]
+Description=Alpaca Crypto Strategy Engine Run
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/alpaca-trading
+EnvironmentFile=/opt/alpaca-trading/.env
+ExecStart=/opt/alpaca-trading/strategy-engine/.venv/bin/python scripts/run_crypto.py
+StandardOutput=append:/opt/alpaca-trading/logs/crypto.log
+StandardError=append:/opt/alpaca-trading/logs/crypto.log
+
+# Crypto strategies are lighter than equity (no FinBERT)
+MemoryMax=1024M
+TimeoutStartSec=900

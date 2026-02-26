@@ -67,17 +67,57 @@
 
 3. **Check status**
    ```bash
+   # Equities
    systemctl status alpaca-monitor alpaca-daily alpaca-intraday
+   # Crypto
+   systemctl status alpaca-crypto-monitor alpaca-crypto.timer
    ```
 
 ---
 
 ## What runs on the droplet
 
+### Equities (market hours only)
+
 | Service          | Frequency              | What it does                                                                 |
 |------------------|------------------------|-------------------------------------------------------------------------------|
 | Price Monitor    | Every 30s              | Checks positions, triggers stop-loss / trailing stop exits instantly        |
-| Daily Engine     | 9:35 AM ET, Mon–Fri    | Full 5-strategy run with FinBERT + earnings + confluence                     |
-| Intraday Scanner | Every 15 min, Mon–Fri  | Dip-buy and breakout signals on 15-min bars                                  |
+| Daily Engine     | 9:35 AM ET, Mon-Fri    | Full 5-strategy run with FinBERT + earnings + confluence                     |
+| Intraday Scanner | Every 15 min, Mon-Fri  | Dip-buy and breakout signals on 15-min bars                                  |
+
+### Crypto (24/7)
+
+| Service          | Frequency              | What it does                                                                 |
+|------------------|------------------------|-------------------------------------------------------------------------------|
+| Crypto Monitor   | Every 60s, 24/7        | Monitors crypto positions: hard stops, trailing stops, scale-out exits       |
+| Crypto Engine    | Every 4h, 24/7         | 4 crypto strategies: momentum, trend, mean reversion, BTC dominance          |
 
 All services auto-restart on crash, survive reboots, and use log rotation.
+
+### Crypto-specific env vars (optional, add to `.env`)
+
+```bash
+# Crypto risk limits (defaults shown - only add if you want to override)
+CRYPTO_MAX_DAILY_LOSS=3000
+CRYPTO_DRAWDOWN_KILL_SWITCH=0.15
+CRYPTO_METADATA_PATH=/opt/alpaca-trading/data/crypto_position_metadata.json
+```
+
+---
+
+## Local development (macOS)
+
+For testing on your Mac before deploying to the droplet:
+
+```bash
+# Run crypto strategy engine once (paper trading)
+cd ~/alpaca-trading/strategy-engine
+uv run python ../scripts/run_crypto.py --paper
+
+# Run crypto monitor in a terminal (paper trading)
+uv run python ../scripts/crypto_monitor.py --interval 60
+
+# Or use the cron wrapper (for crontab/launchd)
+# Runs every 4 hours:
+0 */4 * * * /Users/Tarek/alpaca-trading/scripts/crypto_cron.sh
+```
