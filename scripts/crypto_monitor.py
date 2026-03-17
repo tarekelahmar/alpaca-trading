@@ -39,8 +39,9 @@ from portfolio.trade_logger import TradeLogger, TradeExit
 
 
 # Crypto-specific thresholds (wider than equities)
-HARD_STOP_PCT = 0.12          # 12% max loss (vs 8% equities)
-TRAILING_STOP_PCT = 0.08      # 8% trailing (vs 5% equities)
+HARD_STOP_PCT = 0.15          # 15% max loss (crypto is volatile)
+TRAILING_STOP_PCT = 0.10      # 10% trailing (no-meta fallback)
+STOP_LOSS_ATR_MULT = 3.0     # initial stop: 3x ATR from entry (wider for crypto)
 
 # Portfolio-level kill switch
 MAX_DAILY_LOSS = float(os.environ.get("CRYPTO_MAX_DAILY_LOSS", "3000"))
@@ -241,6 +242,15 @@ def check_exits(
                             f"(LWM ${lwm:.2f} + {effective_mult:.1f}x "
                             f"ATR ${meta.atr_at_entry:.2f})"
                         )
+                else:
+                    initial_stop = entry + STOP_LOSS_ATR_MULT * meta.atr_at_entry
+                    if current > initial_stop:
+                        exit_reason = (
+                            f"ATR INITIAL STOP (short): ${current:.2f} above "
+                            f"${initial_stop:.2f} "
+                            f"(entry ${entry:.2f} + {STOP_LOSS_ATR_MULT:.1f}x "
+                            f"ATR ${meta.atr_at_entry:.2f})"
+                        )
             else:
                 if hwm > entry:
                     trail_stop_price = hwm - trail_distance
@@ -249,6 +259,15 @@ def check_exits(
                             f"ATR TRAILING STOP: ${current:.2f} below "
                             f"${trail_stop_price:.2f} "
                             f"(HWM ${hwm:.2f} - {effective_mult:.1f}x "
+                            f"ATR ${meta.atr_at_entry:.2f})"
+                        )
+                else:
+                    initial_stop = entry - STOP_LOSS_ATR_MULT * meta.atr_at_entry
+                    if current < initial_stop:
+                        exit_reason = (
+                            f"ATR INITIAL STOP: ${current:.2f} below "
+                            f"${initial_stop:.2f} "
+                            f"(entry ${entry:.2f} - {STOP_LOSS_ATR_MULT:.1f}x "
                             f"ATR ${meta.atr_at_entry:.2f})"
                         )
 

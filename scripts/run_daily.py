@@ -715,17 +715,21 @@ def main():
                 except Exception:
                     pass
 
-                # Compute trailing stop % for broker-side order
+                # Compute trailing stop % for broker-side order.
+                # This is a WIDE safety net — the real exit logic lives in
+                # price_monitor.py (ATR trail, profit targets, time exits).
+                # The broker stop only catches catastrophic moves.
                 trail_atr_mult = pc.trail_stop_atr_mult
                 if is_smid:
                     trail_atr_mult *= SMID_CAP_TRAIL_MULT
 
                 if atr > 0 and entry_price > 0:
-                    trail_pct = min(12.0, max(3.0,
-                        (trail_atr_mult * atr / entry_price) * 100
+                    # 2x the ATR-based trail as outer envelope
+                    trail_pct = min(20.0, max(8.0,
+                        (trail_atr_mult * 2.0 * atr / entry_price) * 100
                     ))
                 else:
-                    trail_pct = 8.0  # safe default
+                    trail_pct = 12.0  # safe default
 
                 # Trailing stop side: SELL for longs, BUY for shorts
                 trail_side = (

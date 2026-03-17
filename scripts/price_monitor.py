@@ -46,10 +46,10 @@ from portfolio.trade_logger import TradeLogger, TradeExit
 
 
 # Stop-loss and take-profit thresholds
-STOP_LOSS_ATR_MULT = 2.0      # exit if price drops 2x ATR below entry
+STOP_LOSS_ATR_MULT = 2.5      # exit if price drops 2.5x ATR below entry
 TAKE_PROFIT_ATR_MULT = 4.0    # exit if price rises 4x ATR above entry
-TRAILING_STOP_PCT = 0.05       # 5% trailing stop from high-water mark
-HARD_STOP_PCT = 0.08           # 8% max loss from entry — absolute floor
+TRAILING_STOP_PCT = 0.08       # 8% trailing stop from high-water mark (no-meta fallback)
+HARD_STOP_PCT = 0.12           # 12% max loss from entry — absolute floor
 
 # Portfolio-level kill switch
 MAX_DAILY_LOSS = float(os.environ.get("MAX_DAILY_LOSS", "5000"))
@@ -244,8 +244,8 @@ def check_exits(
             trail_distance = effective_mult * meta.atr_at_entry
 
             if is_short:
-                # Short: trail above low-water mark
                 if lwm < entry:
+                    # Short in profit: trail above low-water mark
                     trail_stop_price = lwm + trail_distance
                     if current > trail_stop_price:
                         exit_reason = (
@@ -254,15 +254,35 @@ def check_exits(
                             f"(LWM ${lwm:.2f} + {effective_mult:.1f}x "
                             f"ATR ${meta.atr_at_entry:.2f})"
                         )
+                else:
+                    # Short NOT yet in profit: use wider initial stop from entry
+                    initial_stop = entry + STOP_LOSS_ATR_MULT * meta.atr_at_entry
+                    if current > initial_stop:
+                        exit_reason = (
+                            f"ATR INITIAL STOP (short): ${current:.2f} above "
+                            f"${initial_stop:.2f} "
+                            f"(entry ${entry:.2f} + {STOP_LOSS_ATR_MULT:.1f}x "
+                            f"ATR ${meta.atr_at_entry:.2f})"
+                        )
             else:
-                # Long: trail below high-water mark
                 if hwm > entry:
+                    # Long in profit: trail below high-water mark
                     trail_stop_price = hwm - trail_distance
                     if current < trail_stop_price:
                         exit_reason = (
                             f"ATR TRAILING STOP: ${current:.2f} below "
                             f"${trail_stop_price:.2f} "
                             f"(HWM ${hwm:.2f} - {effective_mult:.1f}x "
+                            f"ATR ${meta.atr_at_entry:.2f})"
+                        )
+                else:
+                    # Long NOT yet in profit: use wider initial stop from entry
+                    initial_stop = entry - STOP_LOSS_ATR_MULT * meta.atr_at_entry
+                    if current < initial_stop:
+                        exit_reason = (
+                            f"ATR INITIAL STOP: ${current:.2f} below "
+                            f"${initial_stop:.2f} "
+                            f"(entry ${entry:.2f} - {STOP_LOSS_ATR_MULT:.1f}x "
                             f"ATR ${meta.atr_at_entry:.2f})"
                         )
 
