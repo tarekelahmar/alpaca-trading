@@ -203,7 +203,7 @@ def check_exits(
 
         # Determine position direction
         meta = position_meta.get(symbol)
-        is_short = (meta and meta.position_side == "short") or pos.get("side") == "short"
+        is_short = (meta and meta.position_side.lower() == "short") or pos.get("side") == "short"
 
         # Update water marks in metadata (persisted across restarts)
         if meta:
