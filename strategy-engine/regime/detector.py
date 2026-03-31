@@ -88,9 +88,23 @@ class RegimeDetector:
         elif vix_current >= t["vix_high"]:
             scores[RegimeType.HIGH_VOLATILITY] += 1.5
             scores[RegimeType.TRENDING_BEARISH] += 0.5
+        elif vix_current >= 20:
+            # Moderately elevated VIX — lean bearish
+            scores[RegimeType.TRENDING_BEARISH] += 0.5
         elif vix_current <= t["vix_low"]:
             scores[RegimeType.TRENDING_BULLISH] += 1.0
             scores[RegimeType.RANGING] += 0.5
+
+        # 1b. VIX velocity — rapid VIX spike is a fast-path bearish signal
+        if vix_data is not None and len(vix_data) >= 5:
+            vix_5d_ago = float(vix_data.iloc[-5]["close"])
+            vix_change = (vix_current - vix_5d_ago) / vix_5d_ago if vix_5d_ago > 0 else 0
+            indicators["vix_5d_change"] = vix_change
+            if vix_change > 0.30:  # VIX spiked 30%+ in 5 days
+                scores[RegimeType.TRENDING_BEARISH] += 1.5
+                scores[RegimeType.HIGH_VOLATILITY] += 0.5
+            elif vix_change > 0.15:  # VIX up 15%+ in 5 days
+                scores[RegimeType.TRENDING_BEARISH] += 0.5
 
         # 2. SPY trend via ADX
         adx = ta.trend.adx(
@@ -123,6 +137,24 @@ class RegimeDetector:
             scores[RegimeType.TRENDING_BULLISH] += 1.0
         elif current_price < ema50 < ema200:
             scores[RegimeType.TRENDING_BEARISH] += 1.0
+
+        # 3b. SPY short-term momentum — fast-path bearish on sharp drops
+        if len(spy_data) >= 20:
+            spy_20d_ago = float(spy_data["close"].iloc[-20])
+            spy_roc_20d = (current_price - spy_20d_ago) / spy_20d_ago
+            indicators["spy_roc_20d"] = spy_roc_20d
+            if spy_roc_20d < -0.05:  # SPY down 5%+ in 20 days
+                scores[RegimeType.TRENDING_BEARISH] += 2.0
+            elif spy_roc_20d < -0.03:  # SPY down 3%+ in 20 days
+                scores[RegimeType.TRENDING_BEARISH] += 1.0
+            elif spy_roc_20d > 0.05:  # SPY up 5%+ in 20 days
+                scores[RegimeType.TRENDING_BULLISH] += 0.5
+
+        # 3c. Price below key EMAs — bearish even without ADX alignment
+        if current_price < ema50 and current_price < ema200:
+            scores[RegimeType.TRENDING_BEARISH] += 1.0
+        elif current_price < ema50:
+            scores[RegimeType.TRENDING_BEARISH] += 0.5
 
         # 4. Market breadth
         if breadth_pct is not None:

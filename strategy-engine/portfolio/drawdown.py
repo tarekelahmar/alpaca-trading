@@ -2,17 +2,22 @@
 
 Implements graduated portfolio risk controls based on peak-to-trough drawdown:
 
-    Level 0: Normal operation (drawdown < 5%)
-    Level 1: Caution (5-7%) — reduce new position sizes by 25%, raise min strength
-    Level 2: Defensive (7-10%) — reduce new position sizes by 50%, raise min strength
-    Level 3: Halt (10-12%) — stop all new entries, only allow exits
-    Level 4: Unwind (>12%) — start unwinding weakest positions
+    Level 0: Normal operation (drawdown < 8%)
+    Level 1: Caution (8-12%) — reduce new position sizes by 25%, raise min strength
+    Level 2: Defensive (12-18%) — reduce new position sizes by 50%, raise min strength
+    Level 3: Halt (18-25%) — stop all new entries, only allow exits
+    Level 4: Unwind (>25%) — start unwinding weakest positions
 
-Auto-recovery: when equity recovers above 5% drawdown from NEW peak,
+Auto-recovery: when equity recovers above 8% drawdown from NEW peak,
 resume normal operation (level 0).
 
 Uses portfolio snapshots from TradeLogger for persistent drawdown tracking
 across restarts.
+
+Note: Previous thresholds (5/7/10/12%) were too tight — an 8% drawdown during
+a geopolitical selloff paralyzed the system and prevented it from opening
+profitable short positions. Widened to allow the system to keep trading
+through normal market volatility.
 """
 
 import os
@@ -22,11 +27,11 @@ from enum import IntEnum
 
 
 # Drawdown thresholds (configurable via environment)
-DRAWDOWN_CAUTION = float(os.environ.get("DRAWDOWN_CAUTION", "0.05"))       # 5%
-DRAWDOWN_DEFENSIVE = float(os.environ.get("DRAWDOWN_DEFENSIVE", "0.07"))   # 7%
-DRAWDOWN_HALT = float(os.environ.get("DRAWDOWN_HALT", "0.10"))            # 10%
-DRAWDOWN_UNWIND = float(os.environ.get("DRAWDOWN_UNWIND", "0.12"))        # 12%
-DRAWDOWN_RECOVERY = float(os.environ.get("DRAWDOWN_RECOVERY", "0.05"))    # 5%
+DRAWDOWN_CAUTION = float(os.environ.get("DRAWDOWN_CAUTION", "0.08"))       # 8%
+DRAWDOWN_DEFENSIVE = float(os.environ.get("DRAWDOWN_DEFENSIVE", "0.12"))   # 12%
+DRAWDOWN_HALT = float(os.environ.get("DRAWDOWN_HALT", "0.18"))            # 18%
+DRAWDOWN_UNWIND = float(os.environ.get("DRAWDOWN_UNWIND", "0.25"))        # 25%
+DRAWDOWN_RECOVERY = float(os.environ.get("DRAWDOWN_RECOVERY", "0.08"))    # 8%
 
 
 class DrawdownLevel(IntEnum):
@@ -157,7 +162,7 @@ class DrawdownCircuitBreaker:
                 peak_equity=peak_equity,
                 current_equity=equity,
                 size_multiplier=0.50,
-                min_strength_override=0.45,
+                min_strength_override=0.35,
                 allow_new_entries=True,
                 unwind_weakest=False,
                 description=(
@@ -174,7 +179,7 @@ class DrawdownCircuitBreaker:
                 peak_equity=peak_equity,
                 current_equity=equity,
                 size_multiplier=0.75,
-                min_strength_override=0.35,
+                min_strength_override=0.25,
                 allow_new_entries=True,
                 unwind_weakest=False,
                 description=(

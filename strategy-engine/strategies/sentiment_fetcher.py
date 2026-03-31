@@ -352,7 +352,7 @@ class AlpacaNewsSentimentClient:
         key = os.environ.get("ALPACA_API_KEY_ID", "")
         secret = os.environ.get("ALPACA_API_SECRET_KEY", "")
         if key and secret:
-            self.client = NewsClient(key, secret)
+            self.client = NewsClient(api_key=key, secret_key=secret)
         else:
             self.client = NewsClient()
         self.decay_half_life_hours = decay_half_life_hours

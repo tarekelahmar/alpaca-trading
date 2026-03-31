@@ -75,8 +75,8 @@ class PortfolioOptimizationConfig:
 
 
 # Short position limits from environment
-MAX_SHORT_POSITIONS = int(os.environ.get("MAX_SHORT_POSITIONS", "5"))
-MAX_SHORT_CONCENTRATION = float(os.environ.get("MAX_SHORT_CONCENTRATION", "0.15"))
+MAX_SHORT_POSITIONS = int(os.environ.get("MAX_SHORT_POSITIONS", "8"))
+MAX_SHORT_CONCENTRATION = float(os.environ.get("MAX_SHORT_CONCENTRATION", "0.25"))
 
 # Sector exposure limit — max fraction of equity in any single sector
 MAX_SECTOR_EXPOSURE = float(os.environ.get("MAX_SECTOR_EXPOSURE", "0.30"))

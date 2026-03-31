@@ -234,37 +234,37 @@ def test_drawdown_levels():
     assert state.unwind_weakest is False
     print(f"  2% drawdown → NORMAL (size=1.0x) ✓")
 
-    # Caution: 6% drawdown
-    state = breaker.check(94_000, peak)
+    # Caution: 9% drawdown
+    state = breaker.check(91_000, peak)
     assert state.level == DrawdownLevel.CAUTION
     assert state.size_multiplier == 0.75
     assert state.allow_new_entries is True
     assert state.unwind_weakest is False
-    print(f"  6% drawdown → CAUTION (size=0.75x) ✓")
+    print(f"  9% drawdown → CAUTION (size=0.75x) ✓")
 
-    # Defensive: 8% drawdown
-    state = breaker.check(92_000, peak)
+    # Defensive: 15% drawdown
+    state = breaker.check(85_000, peak)
     assert state.level == DrawdownLevel.DEFENSIVE
     assert state.size_multiplier == 0.50
     assert state.allow_new_entries is True
-    assert state.min_strength_override == 0.45
-    print(f"  8% drawdown → DEFENSIVE (size=0.50x, min_strength=0.45) ✓")
+    assert state.min_strength_override == 0.35
+    print(f"  15% drawdown → DEFENSIVE (size=0.50x, min_strength=0.35) ✓")
 
-    # Halt: 11% drawdown
-    state = breaker.check(89_000, peak)
+    # Halt: 20% drawdown
+    state = breaker.check(80_000, peak)
     assert state.level == DrawdownLevel.HALT
     assert state.size_multiplier == 0.0
     assert state.allow_new_entries is False
     assert state.unwind_weakest is False
-    print(f"  11% drawdown → HALT (no entries) ✓")
+    print(f"  20% drawdown → HALT (no entries) ✓")
 
-    # Unwind: 13% drawdown
-    state = breaker.check(87_000, peak)
+    # Unwind: 26% drawdown
+    state = breaker.check(74_000, peak)
     assert state.level == DrawdownLevel.UNWIND
     assert state.size_multiplier == 0.0
     assert state.allow_new_entries is False
     assert state.unwind_weakest is True
-    print(f"  13% drawdown → UNWIND (closing weakest) ✓")
+    print(f"  26% drawdown → UNWIND (closing weakest) ✓")
 
     # Edge: very small equity (99%+ drawdown)
     state = breaker.check(100, peak)
@@ -289,17 +289,17 @@ def test_drawdown_recovery():
     breaker = DrawdownCircuitBreaker()
     peak = 100_000.0
 
-    # Not recovered: 8% drawdown
-    assert not breaker.is_recovered(92_000, peak)
-    print(f"  8% drawdown: NOT recovered ✓")
+    # Not recovered: 10% drawdown
+    assert not breaker.is_recovered(90_000, peak)
+    print(f"  10% drawdown: NOT recovered ✓")
 
-    # Recovered: 3% drawdown (below 5% threshold)
-    assert breaker.is_recovered(97_000, peak)
-    print(f"  3% drawdown: recovered ✓")
+    # Recovered: 5% drawdown (below 8% threshold)
+    assert breaker.is_recovered(95_000, peak)
+    print(f"  5% drawdown: recovered ✓")
 
     # Edge: exactly at threshold
-    assert not breaker.is_recovered(95_000, peak)
-    print(f"  5% drawdown: NOT recovered (at threshold) ✓")
+    assert not breaker.is_recovered(92_000, peak)
+    print(f"  8% drawdown: NOT recovered (at threshold) ✓")
 
     # Edge: above peak (new high)
     assert breaker.is_recovered(105_000, peak)
