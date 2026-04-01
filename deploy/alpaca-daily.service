@@ -13,4 +13,5 @@ StandardError=append:/opt/alpaca-trading/logs/daily.log
 
 # Allow more memory for FinBERT
 MemoryMax=1800M
-TimeoutStartSec=1200
+# FinBERT takes ~13min CPU on 1vCPU + 30min order timeout = needs 45min+
+TimeoutStartSec=3600
