@@ -140,11 +140,14 @@ class StrategyEngine:
         print(f"[Engine] Raw signals: {len(raw_signals)}", file=sys.stderr)
 
         # Step 5: Filter and deduplicate (regime-adaptive strength floor)
+        # Ranging markets are HARDEST to trade — require stronger signals.
+        # Trending markets have clear direction — lower bar is fine.
+        # High vol has dislocations — moderate bar, let good signals through.
         regime_min_strengths = {
-            "trending_bullish": 0.10,
-            "trending_bearish": 0.25,
-            "ranging": 0.10,
-            "high_volatility": 0.30,
+            "trending_bullish": 0.15,
+            "trending_bearish": 0.20,
+            "ranging": 0.35,        # was 0.10 — ranging needs strongest signals
+            "high_volatility": 0.25,  # was 0.30 — vol spikes create opportunity
         }
         self.signal_filter.min_strength = regime_min_strengths.get(
             regime.regime.value, 0.10

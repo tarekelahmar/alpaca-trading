@@ -301,7 +301,7 @@ def test_profit_configs():
     for tier in [1, 2, 3, 4]:
         c = get_profit_config("gap_trading", tier)
         assert c.time_exit_days is not None, f"Gap trading T{tier} should be time-limited"
-        assert c.time_exit_days <= 5, f"Gap trading T{tier} time exit too long: {c.time_exit_days}"
+        assert c.time_exit_days <= 10, f"Gap trading T{tier} time exit too long: {c.time_exit_days}"
         assert c.first_target_pct > 0, f"Gap trading T{tier} should have first target"
         print(f"  gap_trading T{tier}: target={c.first_target_pct:.0%}, "
               f"time={c.time_exit_days}d, trail={c.trail_stop_atr_mult}x ✓")

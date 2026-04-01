@@ -31,13 +31,13 @@ from strategies.base import Signal, SignalDirection, Strategy, StrategyConfig
 DEFAULT_PARAMS = {
     "top_n": 8,
     "exit_rank_threshold_multiplier": 1.5,
-    "roc_periods": [10, 21, 63, 126],  # 2w, 1m, 3m, 6m
-    "roc_weights": [0.15, 0.25, 0.30, 0.30],
-    "ema_trend_period": 100,
+    "roc_periods": [5, 10, 21, 63],  # 1w, 2w, 1m, 3m — shorter lookback catches earlier moves
+    "roc_weights": [0.20, 0.30, 0.30, 0.20],  # heavier on 2w-1m sweet spot
+    "ema_trend_period": 50,  # faster EMA (was 100) — reacts sooner to trend changes
     "min_avg_volume": 200_000,
     "volume_lookback": 20,
-    "min_roc_6m": 10.0,
-    "min_roc_2w": -10.0,  # allow deeper recent dips if longer-term momentum is strong
+    "min_roc_longest": 5.0,  # 3-month ROC >= 5% (was 6-month >= 10%)
+    "min_roc_shortest": -8.0,  # 1-week dip tolerance (was 2-week -10%)
 }
 
 
@@ -195,11 +195,11 @@ class MomentumStrategy(Strategy):
             rocs.append(roc)
 
         # Check minimum thresholds
-        # 6-month ROC is last in the list
-        if rocs[-1] < p["min_roc_6m"]:
+        # Longest period ROC is last in the list
+        if rocs[-1] < p["min_roc_longest"]:
             return None
-        # 2-week ROC is first
-        if rocs[0] < p["min_roc_2w"]:
+        # Shortest period ROC is first
+        if rocs[0] < p["min_roc_shortest"]:
             return None
 
         # Weighted composite score
@@ -230,11 +230,11 @@ class MomentumStrategy(Strategy):
             roc = (float(curr["close"]) / float(df.iloc[-(period + 1)]["close"]) - 1) * 100
             rocs.append(roc)
 
-        # 6-month ROC must be negative (stock in decline)
+        # Longest period ROC must be negative (stock in decline)
         if rocs[-1] > 0.0:
             return None
-        # 2-week ROC must be < +10% (not rebounding sharply)
-        if rocs[0] > 10.0:
+        # Shortest period ROC must not be rebounding too sharply
+        if rocs[0] > 8.0:
             return None
 
         # Weighted composite score (will be negative for declining stocks)

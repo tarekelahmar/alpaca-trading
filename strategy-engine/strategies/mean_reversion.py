@@ -2,13 +2,13 @@
 
 Entry conditions (long):
     - RSI(14) < 40 (oversold)
-    - Price within 1.5% of or below lower Bollinger Band (20, 2.0)
-    - ADX < 35 (ranging to mild trend)
+    - Price within 2.5% of or below lower Bollinger Band (20, 2.0)
+    - ADX < 30 (ranging to mild trend)
 
 Entry conditions (short):
     - RSI(14) > 65 (overbought)
-    - Price within 1.5% of or above upper Bollinger Band
-    - ADX < 35 (ranging market)
+    - Price within 2.5% of or above upper Bollinger Band
+    - ADX < 30 (ranging to mild trend)
 
 Exit conditions (close longs):
     - RSI(14) > 65 AND price at upper BB
@@ -31,9 +31,9 @@ DEFAULT_PARAMS = {
     "rsi_exit": 50,
     "bb_period": 20,
     "bb_std": 2.0,
-    "bb_proximity_pct": 0.005,  # enter within 0.5% of BB (only at actual extremes)
+    "bb_proximity_pct": 0.025,  # enter within 2.5% of BB (was 0.5% — way too tight)
     "adx_period": 14,
-    "adx_max": 25,
+    "adx_max": 30,  # was 25 — allow mild trends, not just dead-flat ranges
     "atr_period": 14,
     "atr_stop_multiplier": 1.5,
     "min_avg_volume": 200_000,

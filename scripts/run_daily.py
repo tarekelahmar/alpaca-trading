@@ -220,6 +220,26 @@ def main():
     except Exception as e:
         print(f"[VIX] Could not compute VIX proxy: {e}", file=sys.stderr)
 
+    # Compute market breadth: % of universe stocks with price > 200-day EMA
+    breadth_pct = None
+    try:
+        import ta as ta_lib
+        above_200 = 0
+        total_checked = 0
+        for sym, df in all_data.items():
+            if len(df) >= 200:
+                ema200 = ta_lib.trend.ema_indicator(df["close"], window=200).iloc[-1]
+                if not pd.isna(ema200):
+                    total_checked += 1
+                    if float(df.iloc[-1]["close"]) > float(ema200):
+                        above_200 += 1
+        if total_checked > 20:
+            breadth_pct = above_200 / total_checked
+            print(f"[Breadth] {above_200}/{total_checked} stocks above 200 EMA "
+                  f"= {breadth_pct:.1%}", file=sys.stderr)
+    except Exception as e:
+        print(f"[Breadth] Could not compute breadth: {e}", file=sys.stderr)
+
     # Get portfolio context
     portfolio = get_portfolio_context(trading_client)
     portfolio.vix_level = vix_proxy
@@ -259,6 +279,7 @@ def main():
         portfolio=portfolio,
         current_positions=current_positions,
         drawdown_state=drawdown_state,
+        breadth_pct=breadth_pct,
     )
 
     # Log regime and equity snapshot
@@ -388,11 +409,14 @@ def main():
                 print(f"  Error closing {symbol}: {e}", file=sys.stderr)
         time.sleep(2)  # wait for fills
 
-    # Remove entry orders for conflict symbols (enter on next day)
+    # Allow entry orders for conflict symbols — the regime has flipped,
+    # so entering the opposite direction same day is the right move.
+    # (Previously we skipped these, losing a full day of edge.)
+    # Only remove the CLOSE order since we already closed via API above.
     orders = [
         o for o in orders
         if o.symbol not in conflict_exits
-        or o.signal.direction == SignalDirection.CLOSE
+        or o.signal.direction != SignalDirection.CLOSE
     ]
 
     # Initialize smart executor for limit orders and timing
@@ -759,6 +783,28 @@ def main():
                     sig.features.get("bb_middle")
                     if pc.exit_at_bb_middle else None
                 )
+
+                # Compute ATR-based profit targets (adapts to each stock's vol)
+                from portfolio.profit_targets import atr_to_pct
+                if atr > 0 and entry_price > 0 and pc.first_target_atr > 0:
+                    effective_t1_pct = atr_to_pct(pc.first_target_atr, atr, entry_price)
+                else:
+                    effective_t1_pct = pc.first_target_pct  # fallback to fixed %
+
+                if atr > 0 and entry_price > 0 and pc.second_target_atr > 0:
+                    effective_t2_pct = atr_to_pct(pc.second_target_atr, atr, entry_price)
+                else:
+                    effective_t2_pct = pc.second_target_pct  # fallback
+
+                print(
+                    f"  TARGETS {symbol}: T1={effective_t1_pct:.1%} "
+                    f"({pc.first_target_atr:.1f}x ATR), "
+                    f"T2={effective_t2_pct:.1%} "
+                    f"({pc.second_target_atr:.1f}x ATR), "
+                    f"ATR=${atr:.2f}",
+                    file=sys.stderr,
+                )
+
                 metadata[symbol] = PositionMeta(
                     entry_price=entry_price,
                     entry_date=datetime.now().strftime("%Y-%m-%d"),
@@ -768,7 +814,7 @@ def main():
                     initial_qty=qty,
                     remaining_qty=qty,
                     first_target_hit=False,
-                    first_target_pct=pc.first_target_pct,
+                    first_target_pct=effective_t1_pct,
                     partial_sell_pct=pc.partial_sell_pct,
                     trail_stop_atr_mult=trail_atr_mult,
                     time_exit_days=pc.time_exit_days,
@@ -777,7 +823,7 @@ def main():
                     is_smid_cap=is_smid,
                     broker_trailing_stop_order_id=trailing_order_id,
                     position_side=position_side,
-                    second_target_pct=pc.second_target_pct,
+                    second_target_pct=effective_t2_pct,
                     second_sell_pct=pc.second_sell_pct,
                     second_target_hit=False,
                 )

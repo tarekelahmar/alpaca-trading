@@ -150,16 +150,20 @@ class PositionSizer:
         # Apply conviction-tiered scaling
         final_allocation = capped_allocation * strength_scale
 
-        # VIX-based volatility scaling — reduce size in high-volatility markets
+        # VIX-based volatility scaling — vol spikes create opportunity,
+        # but extreme panic (VIX > 45) is genuinely dangerous.
+        # Key insight: VIX 22-35 is where dislocations offer the best edge.
         vix_scale = 1.0
         if portfolio.vix_level is not None:
-            if portfolio.vix_level > 35:
-                vix_scale = 0.40   # panic — cut to 40% size
-            elif portfolio.vix_level > 28:
-                vix_scale = 0.60   # elevated fear
-            elif portfolio.vix_level > 22:
-                vix_scale = 0.80   # above average volatility
-            # VIX <= 22: full size (1.0)
+            if portfolio.vix_level > 45:
+                vix_scale = 0.50   # extreme panic — cut size for safety
+            elif portfolio.vix_level > 35:
+                vix_scale = 0.80   # high vol — slight caution, still opportunity
+            elif portfolio.vix_level > 25:
+                vix_scale = 1.20   # elevated fear = good opportunity, size UP
+            elif portfolio.vix_level > 18:
+                vix_scale = 1.10   # mild elevation, slight bump
+            # VIX <= 18: full size (1.0), normal conditions
             final_allocation *= vix_scale
 
         # Convert to shares

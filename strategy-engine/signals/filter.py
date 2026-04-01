@@ -9,9 +9,12 @@ Cross-strategy confluence boosting:
     edges in systematic trading — independent models agreeing is a
     high-conviction indicator.
 
-    2 strategies agree: +0.15 boost
-    3 strategies agree: +0.35 boost
-    4+ strategies agree: +0.50 boost (max conviction)
+    2 strategies agree: 1.25x multiplier
+    3 strategies agree: 1.50x multiplier
+    4+ strategies agree: 1.75x multiplier (max conviction)
+
+    Boosting is multiplicative (not additive) so that weak signals
+    from multiple strategies don't get inflated into false confidence.
 
     The best entry_price and tightest stop_loss from all agreeing
     signals are preserved, giving the best execution parameters.
@@ -122,18 +125,20 @@ class SignalFilter:
         best = max(all_sigs, key=lambda s: s.strength)
 
         if len(all_sigs) > 1:
-            # Confluence boosting — aggressive scaling for multi-strategy agreement
+            # Confluence boosting — multiplicative scaling for multi-strategy agreement
+            # This ensures weak signals stay weak even with confluence,
+            # while genuinely strong multi-strategy signals get rewarded.
             n = len(all_sigs)
             if n >= 4:
-                boost = 0.50  # 4+ strategies = max conviction
+                multiplier = 1.75  # 4+ strategies = max conviction
             elif n == 3:
-                boost = 0.35  # 3 strategies = high conviction
+                multiplier = 1.50  # 3 strategies = high conviction
             else:
-                boost = 0.15  # 2 strategies = moderate confirmation
+                multiplier = 1.25  # 2 strategies = moderate confirmation
 
-            # Average the strengths from all agreeing strategies, then add boost
+            # Average the strengths, then multiply (not add)
             avg_strength = sum(s.strength for s in all_sigs) / n
-            best.strength = min(1.0, avg_strength + boost)
+            best.strength = min(1.0, avg_strength * multiplier)
 
             # Inherit the best entry price and tightest stop from all signals
             for sig in all_sigs:
@@ -156,12 +161,12 @@ class SignalFilter:
             strategies = [s.strategy_name for s in all_sigs]
             best.features["confluence"] = True
             best.features["confluence_count"] = n
-            best.features["confluence_boost"] = boost
+            best.features["confluence_multiplier"] = multiplier
             best.features["confirming_strategies"] = strategies
             best.features["pre_boost_strength"] = avg_strength
             best.rationale += (
                 f" [CONFLUENCE x{n}: {', '.join(strategies)} — "
-                f"boost +{boost:.0%}, final strength {best.strength:.2f}]"
+                f"{multiplier:.2f}x, final strength {best.strength:.2f}]"
             )
             print(
                 f"[Filter] CONFLUENCE {best.symbol}: {n} strategies agree "
