@@ -382,6 +382,31 @@ def check_exits(
                 AlertLevel.WARNING,
             )
             try:
+                # Cancel ALL open orders for this symbol FIRST — broker stops
+                # hold shares and block partial/full exits if not cancelled.
+                try:
+                    open_orders = trading_client.get_orders(
+                        filter=GetOrdersRequest(
+                            status=QueryOrderStatus.OPEN,
+                            symbols=[symbol],
+                        )
+                    )
+                    for oo in open_orders:
+                        trading_client.cancel_order_by_id(oo.id)
+                        print(
+                            f"  Cancelled {oo.type.value} order for {symbol} "
+                            f"(id={oo.id})",
+                            file=sys.stderr,
+                        )
+                    if open_orders:
+                        import time as _time
+                        _time.sleep(0.5)  # brief pause for cancellation to settle
+                except Exception as cancel_err:
+                    print(
+                        f"  Warning: order cancel failed for {symbol}: {cancel_err}",
+                        file=sys.stderr,
+                    )
+
                 if is_partial:
                     # Partial close via market order
                     order = MarketOrderRequest(
@@ -414,7 +439,7 @@ def check_exits(
                         meta.remaining_qty = int(qty) - close_shares
                         meta_changed = True
 
-                    # Cancel and replace broker-side trailing stop
+                    # Place new trailing stop for remaining shares
                     if meta:
                         _replace_broker_trailing_stop(
                             trading_client, meta, symbol, entry, exit_side,
@@ -444,15 +469,6 @@ def check_exits(
                     if symbol in position_meta:
                         del position_meta[symbol]
                         meta_changed = True
-
-                    # Cancel broker-side trailing stop if exists
-                    if meta and meta.broker_trailing_stop_order_id:
-                        try:
-                            trading_client.cancel_order_by_id(
-                                meta.broker_trailing_stop_order_id
-                            )
-                        except Exception:
-                            pass  # may already be filled/cancelled
 
                     print(f"  Position closed.", file=sys.stderr)
 
