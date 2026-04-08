@@ -41,7 +41,7 @@ from portfolio.drawdown import (
     DrawdownCircuitBreaker, DrawdownLevel,
     get_peak_equity_from_snapshots, get_weakest_positions,
 )
-from portfolio.position_metadata import PositionMeta, load_metadata, save_metadata
+from portfolio.position_metadata import PositionMeta, load_metadata, save_metadata, merge_metadata
 from portfolio.trade_logger import TradeLogger, TradeExit
 
 
@@ -637,9 +637,18 @@ def run_loop(trading_client: TradingClient, interval: int, paper: bool):
                     except Exception:
                         pass
                     try:
-                        position_meta = load_metadata()
-                    except Exception:
-                        pass
+                        disk_meta = load_metadata()
+                        position_meta = merge_metadata(position_meta, disk_meta)
+                        print(
+                            f"[Monitor] Market-open reload: merged {len(disk_meta)} "
+                            f"disk entries into {len(position_meta)} in-memory entries",
+                            file=sys.stderr,
+                        )
+                    except Exception as e:
+                        print(
+                            f"[Monitor] Warning: market-open metadata merge failed: {e}",
+                            file=sys.stderr,
+                        )
 
             if not market_open:
                 time.sleep(60)
@@ -714,6 +723,20 @@ def run_loop(trading_client: TradingClient, interval: int, paper: bool):
                                 AlertLevel.ERROR,
                             )
                     save_metadata(position_meta)
+
+            # Sync remaining_qty with actual broker position size
+            for pos in positions:
+                sym = pos["symbol"]
+                if sym in position_meta:
+                    actual_qty = int(abs(float(pos.get("qty", 0))))
+                    meta_qty = position_meta[sym].remaining_qty
+                    if actual_qty != meta_qty and actual_qty > 0:
+                        print(
+                            f"[Monitor] Qty mismatch {sym}: "
+                            f"metadata={meta_qty}, actual={actual_qty}. Correcting.",
+                            file=sys.stderr,
+                        )
+                        position_meta[sym].remaining_qty = actual_qty
 
             # Check for exits (ATR trailing, profit targets, time exits)
             position_meta = check_exits(
