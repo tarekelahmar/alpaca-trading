@@ -43,25 +43,28 @@ REGIME_OVERRIDES = {
         "max_open_positions": 15,
         "max_new_positions_per_day": 5,
         "max_total_exposure_pct": 0.95,
-        "min_signal_strength": 0.25,
-    },
-    "trending_bearish": {
-        "max_open_positions": 10,
-        "max_new_positions_per_day": 3,
-        "max_total_exposure_pct": 0.60,
-        "min_signal_strength": 0.40,
-    },
-    "ranging": {
-        "max_open_positions": 20,
-        "max_new_positions_per_day": 5,
-        "max_total_exposure_pct": 0.85,
         "min_signal_strength": 0.20,
     },
+    "trending_bearish": {
+        # Bear markets need shorts — can't block entries with a low exposure cap.
+        # Shorts REDUCE directional risk, so total gross exposure can be higher.
+        "max_open_positions": 15,
+        "max_new_positions_per_day": 5,
+        "max_total_exposure_pct": 0.85,
+        "min_signal_strength": 0.30,
+    },
+    "ranging": {
+        "max_open_positions": 15,
+        "max_new_positions_per_day": 4,
+        "max_total_exposure_pct": 0.80,
+        "min_signal_strength": 0.35,  # hardest to trade — be selective
+    },
     "high_volatility": {
-        "max_open_positions": 10,
-        "max_new_positions_per_day": 2,
-        "max_total_exposure_pct": 0.50,
-        "min_signal_strength": 0.50,
+        # Vol spikes = dislocations = opportunity. Don't hide.
+        "max_open_positions": 12,
+        "max_new_positions_per_day": 4,
+        "max_total_exposure_pct": 0.75,
+        "min_signal_strength": 0.35,
     },
 }
 
@@ -235,10 +238,25 @@ class PortfolioOptimizer:
         # Build list of held symbols for correlation checking
         held_symbols = list(remaining_positions.keys())
 
+        print(
+            f"[Optimizer] Limits: max_open={max_open}, max_new={max_new}, "
+            f"max_exposure={max_exposure:.0%}, min_strength={min_strength:.2f}, "
+            f"current_positions={open_count}, regime={regime}",
+            file=sys.stderr,
+        )
+
         for sig, sizing in entries:
             if open_count >= max_open:
+                print(
+                    f"[Optimizer] STOP: max open positions reached ({open_count}/{max_open})",
+                    file=sys.stderr,
+                )
                 break
             if new_entries >= max_new:
+                print(
+                    f"[Optimizer] STOP: max new entries/day reached ({new_entries}/{max_new})",
+                    file=sys.stderr,
+                )
                 break
             if sizing.shares <= 0:
                 continue
@@ -246,9 +264,19 @@ class PortfolioOptimizer:
             # Short-specific limits
             if sig.direction == SignalDirection.SHORT:
                 if short_count + new_short_entries >= MAX_SHORT_POSITIONS:
+                    print(
+                        f"[Optimizer] Skipping {sig.symbol}: short position limit "
+                        f"({short_count + new_short_entries}/{MAX_SHORT_POSITIONS})",
+                        file=sys.stderr,
+                    )
                     continue
                 new_short_value = short_exposure + sizing.dollar_value
                 if portfolio.equity > 0 and new_short_value / portfolio.equity > MAX_SHORT_CONCENTRATION:
+                    print(
+                        f"[Optimizer] Skipping {sig.symbol}: short concentration "
+                        f"{new_short_value/portfolio.equity:.0%} > {MAX_SHORT_CONCENTRATION:.0%}",
+                        file=sys.stderr,
+                    )
                     continue
 
             # Sector exposure limit
@@ -310,7 +338,14 @@ class PortfolioOptimizer:
                 abs(float(p.get("market_value", 0)))
                 for p in remaining_positions.values()
             )
-            if current_exposure + total_new_value + adjusted_dollar_value > max_new_value:
+            proposed = current_exposure + total_new_value + adjusted_dollar_value
+            if proposed > max_new_value:
+                print(
+                    f"[Optimizer] Skipping {sig.symbol}: exposure "
+                    f"${proposed:,.0f} > ${max_new_value:,.0f} "
+                    f"({proposed/portfolio.equity:.0%} > {max_exposure:.0%})",
+                    file=sys.stderr,
+                )
                 continue
 
             # Create adjusted sizing if needed
