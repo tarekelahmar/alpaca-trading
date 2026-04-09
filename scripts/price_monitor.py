@@ -175,6 +175,9 @@ def _replace_broker_trailing_stop(
         )
 
 
+_exit_cooldowns: dict[str, float] = {}  # symbol -> time.time() when cooldown expires
+
+
 def check_exits(
     positions: list[dict],
     position_meta: dict[str, PositionMeta],
@@ -196,6 +199,13 @@ def check_exits(
 
     for pos in positions:
         symbol = pos["symbol"]
+
+        # Skip symbols in cooldown (recent failed exit due to held shares)
+        if symbol in _exit_cooldowns:
+            if time.time() < _exit_cooldowns[symbol]:
+                continue
+            del _exit_cooldowns[symbol]
+
         entry = pos["avg_entry_price"]
         current = pos["current_price"]
         pnl_pct = pos["unrealized_plpc"]
@@ -399,8 +409,30 @@ def check_exits(
                             file=sys.stderr,
                         )
                     if open_orders:
+                        # Wait for cancellations to fully release held shares.
+                        # Alpaca can take 1-2s to process; verify with a poll.
                         import time as _time
-                        _time.sleep(0.5)  # brief pause for cancellation to settle
+                        for attempt in range(5):
+                            _time.sleep(1.0)
+                            remaining = trading_client.get_orders(
+                                filter=GetOrdersRequest(
+                                    status=QueryOrderStatus.OPEN,
+                                    symbols=[symbol],
+                                )
+                            )
+                            if not remaining:
+                                break
+                            print(
+                                f"  Waiting for {len(remaining)} orders to cancel "
+                                f"for {symbol} (attempt {attempt + 1}/5)...",
+                                file=sys.stderr,
+                            )
+                        else:
+                            print(
+                                f"  Warning: {len(remaining)} orders still open "
+                                f"for {symbol} after 5s — proceeding anyway",
+                                file=sys.stderr,
+                            )
                 except Exception as cancel_err:
                     print(
                         f"  Warning: order cancel failed for {symbol}: {cancel_err}",
@@ -474,6 +506,14 @@ def check_exits(
 
             except Exception as e:
                 alert(f"Failed to close {symbol}: {e}", AlertLevel.ERROR)
+                # Cooldown: don't retry the same symbol for 5 minutes
+                # to avoid spamming thousands of identical failures
+                if "insufficient qty" in str(e):
+                    _exit_cooldowns[symbol] = time.time() + 300
+                    print(
+                        f"  {symbol}: cooldown 5min (shares held by orders)",
+                        file=sys.stderr,
+                    )
 
     if meta_changed:
         save_metadata(position_meta)
